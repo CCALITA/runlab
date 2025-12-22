@@ -14,9 +14,21 @@
 #include <vector>
 
 #include <exec/any_sender_of.hpp>
+#include <exec/env.hpp>
 #include <stdexec/execution.hpp>
 
 namespace runlab::dataflow {
+
+struct Resources {
+  float bias = 0.0f;
+};
+
+struct get_resources_t : stdexec::__query<get_resources_t> {
+  static consteval auto query(stdexec::forwarding_query_t) noexcept -> bool {
+    return true;
+  }
+};
+inline constexpr get_resources_t get_resources{};
 
 using Value = std::variant<float, std::vector<float>>;
 using InputMap = std::unordered_map<std::string, Value>;
@@ -37,9 +49,14 @@ using OutputSignatures = stdexec::completion_signatures<
   stdexec::set_error_t(std::exception_ptr),
   stdexec::set_stopped_t()>;
 
-using AnyVoidSender = exec::any_receiver_ref<VoidSignatures>::template any_sender<>;
-using AnyValueSender = exec::any_receiver_ref<ValueSignatures>::template any_sender<>;
-using AnyOutputSender = exec::any_receiver_ref<OutputSignatures>::template any_sender<>;
+using AnyVoidSender = exec::any_receiver_ref<
+  VoidSignatures>::template any_sender<>;
+
+using AnyValueSender = exec::any_receiver_ref<
+  ValueSignatures>::template any_sender<>;
+
+using AnyOutputSender = exec::any_receiver_ref<
+  OutputSignatures>::template any_sender<>;
 
 class SharedVoidSender {
  public:
@@ -125,7 +142,10 @@ inline SharedVoidSender CombineAll(std::vector<SharedVoidSender> tasks) {
 struct KernelDef {
   std::string id;
   size_t arity = 0;
-  std::function<AnyValueSender(const std::any& config, std::vector<Value> inputs)> invoke;
+  std::function<AnyValueSender(const std::any& config,
+                               std::vector<Value> inputs,
+                               const Resources& resources)>
+    invoke;
 };
 
 class KernelRegistry {
@@ -162,11 +182,14 @@ struct NodeSpec {
 class CompiledGraph {
  public:
   auto sender(InputMap inputs) const {
-    return stdexec::let_value(
-      stdexec::just(),
-      [this, inputs = std::move(inputs)]() mutable {
-        return build_sender(std::move(inputs));
+    auto built = stdexec::let_value(
+      stdexec::when_all(
+        stdexec::get_scheduler(),
+        exec::read_with_default(get_resources, Resources{})),
+      [this, inputs = std::move(inputs)](auto sched, Resources resources) mutable {
+        return build_sender(std::move(inputs), std::move(sched), resources);
       });
+    return built;
   }
 
   const std::vector<std::string>& order() const { return order_; }
@@ -183,8 +206,13 @@ class CompiledGraph {
         outputs_(std::move(outputs)),
         registry_(std::move(registry)) {}
 
-  AnyOutputSender build_sender(InputMap inputs) const {
+  template <class Scheduler>
+    requires stdexec::scheduler<Scheduler>
+  AnyOutputSender build_sender(InputMap inputs,
+                               Scheduler sched,
+                               Resources resources) const {
     auto inputs_ptr = std::make_shared<InputMap>(std::move(inputs));
+    auto resources_ptr = std::make_shared<Resources>(std::move(resources));
 
     std::unordered_map<std::string, SharedValueSender> tasks;
     tasks.reserve(nodes_.size());
@@ -200,7 +228,8 @@ class CompiledGraph {
           }
           return it->second;
         });
-        tasks.emplace(id, SharedValueSender(stdexec::split(std::move(s))));
+        auto started = stdexec::starts_on(sched, std::move(s));
+        tasks.emplace(id, SharedValueSender(stdexec::split(std::move(started))));
         continue;
       }
 
@@ -228,10 +257,11 @@ class CompiledGraph {
       auto deps_barrier = CombineAll(std::move(dep_writes));
       auto node_sender = stdexec::let_value(
         std::move(deps_barrier),
-        [kernel, config = node.config, values]() mutable {
-          return kernel.invoke(config, std::move(*values));
+        [kernel, config = node.config, values, resources_ptr]() mutable {
+          return kernel.invoke(config, std::move(*values), *resources_ptr);
         });
-      tasks.emplace(id, SharedValueSender(stdexec::split(std::move(node_sender))));
+      auto started = stdexec::starts_on(sched, std::move(node_sender));
+      tasks.emplace(id, SharedValueSender(stdexec::split(std::move(started))));
     }
 
     auto outputs = std::make_shared<OutputMap>();

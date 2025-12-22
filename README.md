@@ -104,3 +104,15 @@ DAG as pure stdexec dataflow:
 - Nodes are restricted to `kernel_id + config + input edges` (no per-node lambdas).
 - Kernels acquire resources via the receiver environment (allocator/device/etc.).
 - Running a graph returns a sender; `sync_wait` is optional at the boundary.
+
+Resource injection example (see `include/runlab/dataflow.hpp`):
+
+```cpp
+using namespace runlab::dataflow;
+
+auto snd = stdexec::write_env(
+  compiled.sender(InputMap{{"x", Value{10.0f}}}),
+  exec::with(get_resources, Resources{.bias = 2.0f}));
+
+auto out = std::get<0>(*stdexec::sync_wait(std::move(snd)));
+```

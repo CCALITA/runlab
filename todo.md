@@ -31,3 +31,4 @@
 - Multi-graph support (named DAGs with per-graph contexts)
 - Control/data split via `Graph::compile()` -> `CompiledGraph` (pure C++ run)
 - Stdexec-native entrypoints (`Graph::sender`, `Engine::start_*`)
+- Env-based resource injection (dataflow, via receiver env queries)

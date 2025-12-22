@@ -141,3 +141,4 @@ L3: C++ 捕获 std::exception_ptr，转换为 Python 的 RuntimeError 并抛回�
 - Build + ctest run completed; Python example blocked by missing NumPy.
 - Refactored runtime to build DAG execution with stdexec senders (split/when_all/sync_wait).
 - Planning next runtime iteration: kernel registry + stdexec value-channel DAG (no shared blackboard for data).
+- Prototyped env-injected resources for kernels via a forwarding query (`get_resources`).
