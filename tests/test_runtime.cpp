@@ -160,6 +160,97 @@ int main() {
     }
   }
 
+  {
+    runlab::Engine engine(2);
+
+    engine.add_node_to("g1", "input", [](runlab::GraphContext& ctx) {
+      std::vector<float> values{1.0f, 2.0f};
+      return stdexec::then(stdexec::just(), [&ctx, values]() { ctx.put("v", values); });
+    });
+    engine.add_node_to("g1", "total", {"input"}, [](runlab::GraphContext& ctx) {
+      const auto values = ctx.get<std::vector<float>>("v");
+      return stdexec::then(stdexec::just(), [&ctx, values]() {
+        ctx.put("sum", values[0] + values[1]);
+      });
+    });
+
+    engine.add_node_to("g2", "input", [](runlab::GraphContext& ctx) {
+      std::vector<float> values{10.0f};
+      return stdexec::then(stdexec::just(), [&ctx, values]() { ctx.put("v", values); });
+    });
+    engine.add_node_to("g2", "total", {"input"}, [](runlab::GraphContext& ctx) {
+      const auto values = ctx.get<std::vector<float>>("v");
+      return stdexec::then(stdexec::just(), [&ctx, values]() { ctx.put("sum", values[0]); });
+    });
+
+    engine.run_graph("g1");
+    engine.run_graph("g2");
+
+    const float g1_sum = engine.context("g1").get<float>("sum");
+    const float g2_sum = engine.context("g2").get<float>("sum");
+    if (std::fabs(g1_sum - 3.0f) > 0.001f) {
+      return Fail("multi-graph run produced wrong g1 result");
+    }
+    if (std::fabs(g2_sum - 10.0f) > 0.001f) {
+      return Fail("multi-graph run produced wrong g2 result");
+    }
+  }
+
+  {
+    runlab::Graph graph;
+    graph.add_node("x", [](runlab::GraphContext& ctx) {
+      return stdexec::then(stdexec::just(), [&ctx]() { ctx.put("x", 42); });
+    });
+    auto compiled = graph.compile();
+
+    runlab::Engine engine(1);
+    runlab::GraphContext ctx;
+    engine.run(compiled, ctx);
+
+    if (ctx.get<int>("x") != 42) {
+      return Fail("compiled graph did not run in pure C++");
+    }
+  }
+
+  {
+    runlab::Engine engine(1);
+    engine.graph("bg").add_node("x", [](runlab::GraphContext& ctx) {
+      return stdexec::then(stdexec::just(), [&ctx]() { ctx.put("x", 1); });
+    });
+    engine.compile_and_install("bg");
+    engine.run_installed("bg");
+    if (engine.context("bg").get<int>("x") != 1) {
+      return Fail("installed graph did not run");
+    }
+
+    runlab::Graph g2;
+    g2.add_node("x", [](runlab::GraphContext& ctx) {
+      return stdexec::then(stdexec::just(), [&ctx]() { ctx.put("x", 2); });
+    });
+    engine.install_graph("bg", g2.compile());
+    engine.context("bg").clear();
+    engine.run_installed("bg");
+    if (engine.context("bg").get<int>("x") != 2) {
+      return Fail("installed graph swap did not take effect");
+    }
+  }
+
+  {
+    runlab::Engine engine(1);
+    engine.graph("s").add_node("x", [](runlab::GraphContext& ctx) {
+      return stdexec::then(stdexec::just(), [&ctx]() { ctx.put("x", 7); });
+    });
+
+    auto snd = engine.start_graph("s");
+    if (engine.context("s").contains("x")) {
+      return Fail("sender creation had side effects");
+    }
+    stdexec::sync_wait(std::move(snd));
+    if (engine.context("s").get<int>("x") != 7) {
+      return Fail("start_graph sender did not run");
+    }
+  }
+
   std::cout << "All tests passed.\n";
   return 0;
 }

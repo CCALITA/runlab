@@ -23,3 +23,6 @@
 - Document NumPy requirements and `build/` module path
 - Track per-node status and error causes
 - Add `Engine.validate()` for graph validation/toposort
+- Multi-graph support (named DAGs with per-graph contexts)
+- Control/data split via `Graph::compile()` -> `CompiledGraph` (pure C++ run)
+- Stdexec-native entrypoints (`Graph::sender`, `Engine::start_*`)

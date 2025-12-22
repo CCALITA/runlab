@@ -40,6 +40,46 @@ print(engine.get_vector("embed"))
 print(engine.get_float("total"))
 ```
 
+## Multiple graphs
+
+One `Engine` can host multiple named DAGs. Each graph has its own `GraphContext`
+(blackboard + node statuses).
+
+```python
+engine.add_node("input", "input", {"data": x}, graph="g1")
+engine.add_node("total", "sum", {"input": "input"}, graph="g1")
+engine.run(graph="g1")
+print(engine.get_float("total", graph="g1"))
+```
+
+## Pure C++ (control/data split)
+
+Build/validate a `runlab::Graph` on a control thread, compile it once, then run the
+immutable `runlab::CompiledGraph` on an `Engine` (optionally from another thread).
+
+```cpp
+runlab::Graph g;
+// g.add_node(...); g.add_edge(...);
+auto compiled = g.compile();
+runlab::GraphContext ctx;
+runlab::Engine engine(4);
+engine.run(compiled, ctx);
+```
+
+For background graph building / hot-swap, install a compiled snapshot and run it:
+
+```cpp
+engine.install_graph("prod", g.compile());   // atomic publish point
+engine.run_installed("prod");                // runs stable snapshot
+```
+
+For stdexec-native composition, prefer the sender-returning APIs:
+
+```cpp
+auto snd = engine.start_installed("prod");
+stdexec::sync_wait(std::move(snd));
+```
+
 ## Notes
 
 - This is intentionally small and focuses on the architecture; kernels are simple.
@@ -48,6 +88,8 @@ print(engine.get_float("total"))
 - Importing the built extension typically requires adding `build/` to your module
   search path (the provided `examples/example.py` does `sys.path.insert(0, "build")`).
 - `engine.validate()` returns a topological order and raises on missing deps/cycles.
+- `engine.compile()` builds and installs an immutable compiled snapshot; `engine.run_compiled()`
+  runs the installed snapshot for that graph.
 - `engine.node_status(id)` / `engine.node_statuses()` help debug failed runs.
 - Sender/receiver is based on C++26 P2300 (`std::execution` / stdexec). A local
   reference copy exists at `thirdparty/stdexec/examples/hello_world.cpp`.

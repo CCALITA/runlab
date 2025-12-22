@@ -117,15 +117,16 @@ PYBIND11_MODULE(runlab_py, m) {
       .def(
           "add_node",
           [](runlab::Engine& engine, const std::string& id,
-             const std::string& op_type, const py::dict& params) {
+             const std::string& op_type, const py::dict& params,
+             const std::string& graph_name) {
             if (op_type == "input") {
               if (!params.contains("data")) {
                 throw std::runtime_error("input node requires data");
               }
               auto data = std::make_shared<runlab::FloatSpan>(
                   ToFloatSpanZeroCopy(params["data"]));
-              engine.add_node(
-                  id, [id, data](runlab::GraphContext& ctx) {
+              engine.add_node_to(
+                  graph_name, id, [id, data](runlab::GraphContext& ctx) {
                     return stdexec::then(stdexec::just(), [id, data, &ctx]() {
                       ctx.put(id, *data);
                     });
@@ -136,8 +137,8 @@ PYBIND11_MODULE(runlab_py, m) {
             if (op_type == "scale") {
               const std::string input = RequireString(params, "input");
               const float factor = RequireFloat(params, "factor");
-              engine.add_node(
-                  id, {input},
+              engine.add_node_to(
+                  graph_name, id, {input},
                   [id, input, factor](runlab::GraphContext& ctx) {
                     const auto values = ctx.get_span(input);
                     auto sender = runlab::kernels::scale(values, factor);
@@ -153,8 +154,8 @@ PYBIND11_MODULE(runlab_py, m) {
             if (op_type == "add") {
               const std::string left = RequireString(params, "left");
               const std::string right = RequireString(params, "right");
-              engine.add_node(
-                  id, {left, right},
+              engine.add_node_to(
+                  graph_name, id, {left, right},
                   [id, left, right](runlab::GraphContext& ctx) {
                     const auto a = ctx.get_span(left);
                     const auto b = ctx.get_span(right);
@@ -170,8 +171,8 @@ PYBIND11_MODULE(runlab_py, m) {
 
             if (op_type == "sum") {
               const std::string input = RequireString(params, "input");
-              engine.add_node(
-                  id, {input},
+              engine.add_node_to(
+                  graph_name, id, {input},
                   [id, input](runlab::GraphContext& ctx) {
                     const auto values = ctx.get_span(input);
                     auto sender = runlab::kernels::sum(values);
@@ -184,8 +185,8 @@ PYBIND11_MODULE(runlab_py, m) {
 
             if (op_type == "embedding") {
               const std::string input = RequireString(params, "input");
-              engine.add_node(
-                  id, {input},
+              engine.add_node_to(
+                  graph_name, id, {input},
                   [id, input](runlab::GraphContext& ctx) {
                     const auto values = ctx.get_span(input);
                     auto sender = runlab::kernels::compute_embedding(values);
@@ -200,46 +201,92 @@ PYBIND11_MODULE(runlab_py, m) {
 
             throw std::runtime_error("unknown op_type: " + op_type);
           },
-          py::arg("id"), py::arg("op_type"),
-          py::arg("params") = py::dict())
-      .def("add_edge", &runlab::Engine::add_edge)
-      .def("clear", &runlab::Engine::clear)
-      .def("validate", &runlab::Engine::validate)
-      .def("run", [](runlab::Engine& engine) {
-        py::gil_scoped_release release;
-        engine.run();
-      })
+          py::arg("id"), py::arg("op_type"), py::arg("params") = py::dict(),
+          py::arg("graph") = "default")
+      .def(
+          "add_edge",
+          [](runlab::Engine& engine, const std::string& from,
+             const std::string& to, const std::string& graph) {
+            engine.add_edge(graph, from, to);
+          },
+          py::arg("from"), py::arg("to"), py::arg("graph") = "default")
+      .def(
+          "clear",
+          [](runlab::Engine& engine, const std::string& graph) {
+            engine.clear_graph(graph);
+          },
+          py::arg("graph") = "default")
+      .def(
+          "validate",
+          [](runlab::Engine& engine, const std::string& graph) {
+            return engine.validate(graph);
+          },
+          py::arg("graph") = "default")
+      .def(
+          "compile",
+          [](runlab::Engine& engine, const std::string& graph) {
+            return engine.compile_and_install(graph);
+          },
+          py::arg("graph") = "default")
+      .def(
+          "run",
+          [](runlab::Engine& engine, const std::string& graph) {
+            py::gil_scoped_release release;
+            engine.run_graph(graph);
+          },
+          py::arg("graph") = "default")
+      .def(
+          "run_compiled",
+          [](runlab::Engine& engine, const std::string& graph) {
+            py::gil_scoped_release release;
+            engine.run_installed(graph);
+          },
+          py::arg("graph") = "default")
       .def("get_vector",
-           [](runlab::Engine& engine, const std::string& key) {
+           [](runlab::Engine& engine, const std::string& key,
+              const std::string& graph) {
              runlab::FloatSpan span;
-             if (engine.context().try_get<runlab::FloatSpan>(key, &span)) {
+             auto& ctx = engine.context(graph);
+             if (ctx.try_get<runlab::FloatSpan>(key, &span)) {
                return ToArrayView(span);
              }
-             auto values = engine.context().get<std::vector<float>>(key);
+             auto values = ctx.get<std::vector<float>>(key);
              return ToArray(values);
-           })
-      .def("get_float", [](runlab::Engine& engine, const std::string& key) {
-        return engine.context().get<float>(key);
-      })
+           },
+           py::arg("key"), py::arg("graph") = "default")
+      .def(
+          "get_float",
+          [](runlab::Engine& engine, const std::string& key,
+             const std::string& graph) {
+            return engine.context(graph).get<float>(key);
+          },
+          py::arg("key"), py::arg("graph") = "default")
       .def("node_status",
-           [](runlab::Engine& engine, const std::string& id) {
-             const auto status = engine.context().node_status(id);
+           [](runlab::Engine& engine, const std::string& id,
+              const std::string& graph) {
+             const auto status = engine.context(graph).node_status(id);
              return std::string(runlab::ToString(status));
-           })
+           },
+           py::arg("id"), py::arg("graph") = "default")
       .def("node_error",
-           [](runlab::Engine& engine, const std::string& id) -> py::object {
-             auto err = engine.context().node_error(id);
+           [](runlab::Engine& engine, const std::string& id,
+              const std::string& graph) -> py::object {
+             auto err = engine.context(graph).node_error(id);
              if (!err) {
                return py::none();
              }
              return py::str(ExceptionToString(std::move(err)));
-           })
-      .def("node_statuses", [](runlab::Engine& engine) {
-        py::dict out;
-        const auto states = engine.context().node_states_snapshot();
-        for (const auto& [id, state] : states) {
-          out[py::str(id)] = py::str(runlab::ToString(state.status));
-        }
-        return out;
-      });
+           },
+           py::arg("id"), py::arg("graph") = "default")
+      .def(
+          "node_statuses",
+          [](runlab::Engine& engine, const std::string& graph) {
+            py::dict out;
+            const auto states = engine.context(graph).node_states_snapshot();
+            for (const auto& [id, state] : states) {
+              out[py::str(id)] = py::str(runlab::ToString(state.status));
+            }
+            return out;
+          },
+          py::arg("graph") = "default");
 }

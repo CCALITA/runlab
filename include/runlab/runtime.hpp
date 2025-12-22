@@ -218,6 +218,7 @@ using TaskSignatures = stdexec::completion_signatures<
 
 using DynTask = exec::any_receiver_ref<TaskSignatures>::template any_sender<>;
 using DynTaskFactory = std::function<DynTask(GraphContext&)>;
+using AnyScheduler = DynTask::template any_scheduler<>;
 
 struct Node {
   std::string id;
@@ -280,101 +281,38 @@ DynTaskFactory MakeTaskFactory(Factory factory) {
   };
 }
 
-class Graph {
+class CompiledGraph {
  public:
-  void add_node(Node node) {
-    nodes_[node.id] = std::move(node);
-  }
+  CompiledGraph() = default;
 
-  void add_node(std::string id,
-                std::vector<std::string> deps,
-                DynTaskFactory make_task) {
-    add_node(Node{std::move(id), std::move(deps), std::move(make_task)});
-  }
+  CompiledGraph(std::unordered_map<std::string, Node> nodes,
+                std::vector<std::string> order,
+                std::vector<std::string> sinks)
+      : nodes_(std::move(nodes)),
+        order_(std::move(order)),
+        sinks_(std::move(sinks)) {}
 
-  void add_edge(const std::string& from, const std::string& to) {
-    auto it = nodes_.find(to);
-    if (it == nodes_.end()) {
-      throw std::runtime_error("Unknown node: " + to);
-    }
-    it->second.deps.push_back(from);
-  }
+  const std::vector<std::string>& order() const { return order_; }
 
-  void clear() { nodes_.clear(); }
-
-  std::vector<std::string> validate() const {
+  SharedTaskSender sender(GraphContext& ctx, AnyScheduler sched) const {
     if (nodes_.empty()) {
-      return {};
+      return SharedTaskSender(stdexec::just());
     }
 
-    std::unordered_map<std::string, std::vector<std::string>> adj;
-    std::unordered_map<std::string, int> dep_counts;
-    adj.reserve(nodes_.size());
-    dep_counts.reserve(nodes_.size());
-
-    for (const auto& [id, node] : nodes_) {
-      dep_counts[id] = static_cast<int>(node.deps.size());
-      for (const auto& dep : node.deps) {
-        if (nodes_.find(dep) == nodes_.end()) {
-          throw std::runtime_error("Missing dependency: " + dep);
-        }
-        adj[dep].push_back(id);
-      }
-    }
-
-    auto order = TopologicalOrder(dep_counts, adj);
-    if (order.size() != nodes_.size()) {
-      throw std::runtime_error("Graph has a cycle");
-    }
-    return order;
-  }
-
-  void run(GraphContext& ctx, exec::static_thread_pool& pool) const {
-    if (nodes_.empty()) {
-      return;
-    }
-
-    ctx.reset_run_state();
-
-    auto sched = pool.get_scheduler();
-    std::unordered_map<std::string, std::vector<std::string>> adj;
-    std::unordered_map<std::string, int> dep_counts;
-    std::unordered_map<std::string, int> out_counts;
-    adj.reserve(nodes_.size());
-    dep_counts.reserve(nodes_.size());
-    out_counts.reserve(nodes_.size());
-
-    for (const auto& [id, node] : nodes_) {
-      dep_counts[id] = static_cast<int>(node.deps.size());
-      out_counts.emplace(id, 0);
-      for (const auto& dep : node.deps) {
-        if (nodes_.find(dep) == nodes_.end()) {
-          throw std::runtime_error("Missing dependency: " + dep);
-        }
-        adj[dep].push_back(id);
-        ++out_counts[dep];
-      }
-    }
-
-    auto order = TopologicalOrder(dep_counts, adj);
-    if (order.size() != nodes_.size()) {
-      throw std::runtime_error("Graph has a cycle");
-    }
-
-    std::vector<std::string> node_ids;
-    node_ids.reserve(nodes_.size());
-    for (const auto& [id, _] : nodes_) {
-      node_ids.push_back(id);
-    }
-    ctx.init_nodes(node_ids);
+    auto init = stdexec::then(stdexec::just(), [&ctx, order = order_]() mutable {
+      ctx.reset_run_state();
+      ctx.init_nodes(order);
+    });
+    auto init_shared = SharedTaskSender(stdexec::split(std::move(init)));
 
     std::unordered_map<std::string, SharedTaskSender> tasks;
     tasks.reserve(nodes_.size());
 
-    for (const auto& id : order) {
+    for (const auto& id : order_) {
       const auto& node = nodes_.at(id);
       std::vector<SharedTaskSender> deps;
-      deps.reserve(node.deps.size());
+      deps.reserve(node.deps.size() + 1);
+      deps.push_back(init_shared);
       for (const auto& dep : node.deps) {
         deps.push_back(tasks.at(dep));
       }
@@ -410,24 +348,141 @@ class Graph {
       tasks.emplace(id, SharedTaskSender(std::move(shared_sender)));
     }
 
-    std::vector<SharedTaskSender> sinks;
-    sinks.reserve(nodes_.size());
-    for (const auto& [id, count] : out_counts) {
-      if (count == 0) {
-        sinks.push_back(tasks.at(id));
-      }
+    std::vector<SharedTaskSender> sink_tasks;
+    sink_tasks.reserve(sinks_.size());
+    for (const auto& id : sinks_) {
+      sink_tasks.push_back(tasks.at(id));
     }
 
-    auto graph_sender = CombineAll(std::move(sinks));
+    return CombineAll(std::move(sink_tasks));
+  }
+
+  void run(GraphContext& ctx, AnyScheduler sched) const {
+    auto graph_sender = sender(ctx, std::move(sched));
     stdexec::sync_wait(std::move(graph_sender));
     ctx.rethrow_if_error();
   }
 
  private:
-  std::vector<std::string> TopologicalOrder(
+  std::unordered_map<std::string, Node> nodes_;
+  std::vector<std::string> order_;
+  std::vector<std::string> sinks_;
+};
+
+class Graph {
+ public:
+  template <typename Factory>
+  void add_node(std::string id, Factory factory) {
+    add_node(std::move(id), {}, MakeTaskFactory(std::move(factory)));
+  }
+
+  template <typename Factory>
+  void add_node(std::string id, std::vector<std::string> deps, Factory factory) {
+    add_node(std::move(id), std::move(deps), MakeTaskFactory(std::move(factory)));
+  }
+
+  void add_node(Node node) {
+    nodes_[node.id] = std::move(node);
+  }
+
+  void add_node(std::string id,
+                std::vector<std::string> deps,
+                DynTaskFactory make_task) {
+    add_node(Node{std::move(id), std::move(deps), std::move(make_task)});
+  }
+
+  void add_edge(const std::string& from, const std::string& to) {
+    auto it = nodes_.find(to);
+    if (it == nodes_.end()) {
+      throw std::runtime_error("Unknown node: " + to);
+    }
+    it->second.deps.push_back(from);
+  }
+
+  void clear() { nodes_.clear(); }
+
+  SharedTaskSender sender(GraphContext& ctx, AnyScheduler sched) const {
+    auto compiled = compile();
+    return compiled.sender(ctx, std::move(sched));
+  }
+
+  CompiledGraph compile() const {
+    if (nodes_.empty()) {
+      return CompiledGraph();
+    }
+
+    std::unordered_map<std::string, std::vector<std::string>> adj;
+    std::unordered_map<std::string, int> dep_counts;
+    std::unordered_map<std::string, int> out_counts;
+    adj.reserve(nodes_.size());
+    dep_counts.reserve(nodes_.size());
+    out_counts.reserve(nodes_.size());
+
+    for (const auto& [id, node] : nodes_) {
+      dep_counts[id] = static_cast<int>(node.deps.size());
+      out_counts.emplace(id, 0);
+      for (const auto& dep : node.deps) {
+        if (nodes_.find(dep) == nodes_.end()) {
+          throw std::runtime_error("Missing dependency: " + dep);
+        }
+        adj[dep].push_back(id);
+        ++out_counts[dep];
+      }
+    }
+
+    auto order = TopologicalOrder(dep_counts, adj);
+    if (order.size() != nodes_.size()) {
+      throw std::runtime_error("Graph has a cycle");
+    }
+
+    std::vector<std::string> sinks;
+    sinks.reserve(nodes_.size());
+    for (const auto& [id, count] : out_counts) {
+      if (count == 0) {
+        sinks.push_back(id);
+      }
+    }
+
+    return CompiledGraph(nodes_, std::move(order), std::move(sinks));
+  }
+
+  std::vector<std::string> validate() const {
+    if (nodes_.empty()) {
+      return {};
+    }
+
+    std::unordered_map<std::string, std::vector<std::string>> adj;
+    std::unordered_map<std::string, int> dep_counts;
+    adj.reserve(nodes_.size());
+    dep_counts.reserve(nodes_.size());
+
+    for (const auto& [id, node] : nodes_) {
+      dep_counts[id] = static_cast<int>(node.deps.size());
+      for (const auto& dep : node.deps) {
+        if (nodes_.find(dep) == nodes_.end()) {
+          throw std::runtime_error("Missing dependency: " + dep);
+        }
+        adj[dep].push_back(id);
+      }
+    }
+
+    auto order = TopologicalOrder(dep_counts, adj);
+    if (order.size() != nodes_.size()) {
+      throw std::runtime_error("Graph has a cycle");
+    }
+    return order;
+  }
+
+  void run(GraphContext& ctx, exec::static_thread_pool& pool) const {
+    auto compiled = compile();
+    compiled.run(ctx, AnyScheduler(pool.get_scheduler()));
+  }
+
+ private:
+  static std::vector<std::string> TopologicalOrder(
       const std::unordered_map<std::string, int>& dep_counts,
       const std::unordered_map<std::string, std::vector<std::string>>& adj)
-      const {
+      {
     std::queue<std::string> ready;
     std::unordered_map<std::string, int> temp = dep_counts;
     std::vector<std::string> order;
@@ -465,42 +520,202 @@ class Graph {
 class Engine {
  public:
   explicit Engine(size_t thread_count = std::thread::hardware_concurrency())
-      : pool_(thread_count == 0 ? 1 : thread_count) {}
+      : pool_(thread_count == 0 ? 1 : thread_count) {
+    ensure_graph("default");
+  }
+
+  Graph& graph() { return graph("default"); }
+  const Graph& graph() const { return graph("default"); }
+
+  Graph& graph(const std::string& name) { return ensure_graph(name); }
+  const Graph& graph(const std::string& name) const {
+    auto it = graphs_.find(name);
+    if (it == graphs_.end()) {
+      throw std::runtime_error("Unknown graph: " + name);
+    }
+    return it->second;
+  }
+
+  GraphContext& context() { return context("default"); }
+  const GraphContext& context() const { return context("default"); }
+
+  GraphContext& context(const std::string& graph_name) {
+    ensure_graph(graph_name);
+    auto& ptr = contexts_[graph_name];
+    if (!ptr) {
+      ptr = std::make_unique<GraphContext>();
+    }
+    return *ptr;
+  }
+
+  const GraphContext& context(const std::string& graph_name) const {
+    auto it = contexts_.find(graph_name);
+    if (it == contexts_.end() || !it->second) {
+      throw std::runtime_error("Unknown graph context: " + graph_name);
+    }
+    return *it->second;
+  }
 
   template <typename Factory>
   void add_node(std::string id, Factory factory) {
-    graph_.add_node(std::move(id), {}, MakeTaskFactory(std::move(factory)));
+    graph("default").add_node(std::move(id), std::move(factory));
   }
 
   template <typename Factory>
   void add_node(std::string id,
                 std::vector<std::string> deps,
                 Factory factory) {
-    graph_.add_node(
-      std::move(id), std::move(deps), MakeTaskFactory(std::move(factory)));
+    graph("default").add_node(std::move(id), std::move(deps), std::move(factory));
   }
 
   void add_edge(const std::string& from, const std::string& to) {
-    graph_.add_edge(from, to);
+    add_edge("default", from, to);
+  }
+
+  void add_edge(const std::string& graph_name,
+                const std::string& from,
+                const std::string& to) {
+    ensure_graph(graph_name).add_edge(from, to);
+  }
+
+  template <typename Factory>
+  void add_node_to(const std::string& graph_name, std::string id, Factory factory) {
+    graph(graph_name).add_node(std::move(id), std::move(factory));
+  }
+
+  template <typename Factory>
+  void add_node_to(const std::string& graph_name,
+                   std::string id,
+                   std::vector<std::string> deps,
+                   Factory factory) {
+    graph(graph_name).add_node(std::move(id), std::move(deps), std::move(factory));
   }
 
   void clear() {
-    graph_.clear();
-    ctx_.clear();
+    clear_graph("default");
   }
 
-  void run() { graph_.run(ctx_, pool_); }
+  void clear_graph(const std::string& graph_name) {
+    auto it = graphs_.find(graph_name);
+    if (it != graphs_.end()) {
+      it->second.clear();
+    }
+    auto ctx_it = contexts_.find(graph_name);
+    if (ctx_it != contexts_.end() && ctx_it->second) {
+      ctx_it->second->clear();
+    }
+  }
 
-  std::vector<std::string> validate() const { return graph_.validate(); }
+  void run() { run_graph("default"); }
 
-  const GraphContext& context() const { return ctx_; }
+  void run_graph(const std::string& graph_name) {
+    auto compiled = compile_graph(graph_name);
+    compiled.run(context(graph_name), scheduler());
+  }
 
-  GraphContext& context() { return ctx_; }
+  AnyScheduler scheduler() { return AnyScheduler(pool_.get_scheduler()); }
+
+  SharedTaskSender start_graph(const std::string& graph_name) {
+    auto compiled = compile_graph(graph_name);
+    return compiled.sender(context(graph_name), scheduler());
+  }
+
+  SharedTaskSender start(const CompiledGraph& graph, GraphContext& ctx) {
+    return graph.sender(ctx, scheduler());
+  }
+
+  void install_graph(const std::string& graph_name, CompiledGraph graph) {
+    install_graph(graph_name, std::make_shared<CompiledGraph>(std::move(graph)));
+  }
+
+  void install_graph(const std::string& graph_name,
+                     std::shared_ptr<const CompiledGraph> graph) {
+    if (!graph) {
+      throw std::runtime_error("install_graph requires non-null graph");
+    }
+    ensure_graph(graph_name);
+    std::lock_guard<std::mutex> lock(installed_mu_);
+    installed_[graph_name] = std::move(graph);
+  }
+
+  std::shared_ptr<const CompiledGraph> installed_graph(
+      const std::string& graph_name) const {
+    std::lock_guard<std::mutex> lock(installed_mu_);
+    auto it = installed_.find(graph_name);
+    if (it == installed_.end()) {
+      return nullptr;
+    }
+    return it->second;
+  }
+
+  std::vector<std::string> compile_and_install(const std::string& graph_name) {
+    auto compiled = compile_graph(graph_name);
+    std::vector<std::string> order = compiled.order();
+    install_graph(graph_name, std::move(compiled));
+    return order;
+  }
+
+  void run_installed(const std::string& graph_name) {
+    auto graph = installed_graph(graph_name);
+    if (!graph) {
+      throw std::runtime_error("No installed graph: " + graph_name);
+    }
+    run(*graph, context(graph_name));
+  }
+
+  void run_installed(const std::string& graph_name, GraphContext& ctx) {
+    auto graph = installed_graph(graph_name);
+    if (!graph) {
+      throw std::runtime_error("No installed graph: " + graph_name);
+    }
+    run(*graph, ctx);
+  }
+
+  SharedTaskSender start_installed(const std::string& graph_name) {
+    auto graph = installed_graph(graph_name);
+    if (!graph) {
+      throw std::runtime_error("No installed graph: " + graph_name);
+    }
+    return graph->sender(context(graph_name), scheduler());
+  }
+
+  SharedTaskSender start_installed(const std::string& graph_name,
+                                   GraphContext& ctx) {
+    auto graph = installed_graph(graph_name);
+    if (!graph) {
+      throw std::runtime_error("No installed graph: " + graph_name);
+    }
+    return graph->sender(ctx, scheduler());
+  }
+
+  void run(const CompiledGraph& graph, GraphContext& ctx) {
+    graph.run(ctx, scheduler());
+  }
+
+  std::vector<std::string> validate() const { return validate("default"); }
+
+  std::vector<std::string> validate(const std::string& graph_name) const {
+    return graph(graph_name).validate();
+  }
+
+  CompiledGraph compile_graph(const std::string& graph_name) const {
+    return graph(graph_name).compile();
+  }
 
  private:
- Graph graph_;
- GraphContext ctx_;
- exec::static_thread_pool pool_;
+  Graph& ensure_graph(const std::string& name) {
+    auto [it, inserted] = graphs_.try_emplace(name);
+    if (inserted) {
+      contexts_[name] = std::make_unique<GraphContext>();
+    }
+    return it->second;
+  }
+
+  std::unordered_map<std::string, Graph> graphs_;
+  std::unordered_map<std::string, std::unique_ptr<GraphContext>> contexts_;
+  mutable std::mutex installed_mu_;
+  std::unordered_map<std::string, std::shared_ptr<const CompiledGraph>> installed_;
+  exec::static_thread_pool pool_;
 };
 
 }  // namespace runlab
