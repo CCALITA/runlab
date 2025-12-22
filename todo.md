@@ -8,6 +8,7 @@
 - Kernel registry + restricted node specs (kernel + config + inputs)
 - Graph outputs as sender values (no blackboard reads)
 - Env-based resource injection (allocator/device/logging)
+- Env-preserving type erasure for dynamic kernels (custom `EnvAnySender`)
 
 ## Python layer
 - Richer DSL helpers (node builders, graph validation)
