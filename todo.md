@@ -22,3 +22,5 @@
 ## Done
 - Expand tests for error propagation and concurrent scheduling
 - Refactor runtime to compose DAG execution with stdexec senders
+- Zero-copy NumPy input buffers (1-D, C-contiguous float32)
+- Document NumPy requirements and `build/` module path

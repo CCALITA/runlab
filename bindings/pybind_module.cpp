@@ -33,6 +33,53 @@ py::array_t<float> ToArray(const std::vector<float>& data) {
   return array;
 }
 
+runlab::FloatSpan ToFloatSpanZeroCopy(const py::object& obj) {
+  if (!py::isinstance<py::array>(obj)) {
+    throw std::runtime_error(
+        "data must be a NumPy array (1-D float32, C-contiguous)");
+  }
+
+  py::array array = py::reinterpret_borrow<py::array>(obj);
+  if (!array.dtype().is(py::dtype::of<float>())) {
+    throw std::runtime_error(
+        "data must be float32; try np.ascontiguousarray(x, dtype=np.float32)");
+  }
+  if ((array.flags() & py::array::c_style) == 0) {
+    throw std::runtime_error(
+        "data must be C-contiguous; try np.ascontiguousarray(x, dtype=np.float32)");
+  }
+
+  const py::buffer_info info = array.request();
+  if (info.ndim != 1) {
+    throw std::runtime_error("data must be 1-D");
+  }
+
+  auto owner = std::shared_ptr<py::object>(
+      new py::object(array),
+      [](py::object* p) {
+        py::gil_scoped_acquire acquire;
+        delete p;
+      });
+  return runlab::FloatSpan{
+      .owner = std::move(owner),
+      .data = static_cast<const float*>(info.ptr),
+      .size = static_cast<size_t>(info.size),
+  };
+}
+
+py::array_t<float> ToArrayView(const runlab::FloatSpan& span) {
+  auto* owner = new std::shared_ptr<void>(span.owner);
+  py::capsule base(owner, [](void* p) {
+    delete static_cast<std::shared_ptr<void>*>(p);
+  });
+
+  return py::array_t<float>(
+      {static_cast<py::ssize_t>(span.size)},
+      {static_cast<py::ssize_t>(sizeof(float))},
+      const_cast<float*>(span.data),
+      std::move(base));
+}
+
 std::string RequireString(const py::dict& params, const char* key) {
   if (!params.contains(key)) {
     throw std::runtime_error(std::string("missing param: ") + key);
@@ -62,8 +109,8 @@ PYBIND11_MODULE(runlab_py, m) {
               if (!params.contains("data")) {
                 throw std::runtime_error("input node requires data");
               }
-              auto data = std::make_shared<std::vector<float>>(
-                  ToVector(params["data"]));
+              auto data = std::make_shared<runlab::FloatSpan>(
+                  ToFloatSpanZeroCopy(params["data"]));
               engine.add_node(
                   id, [id, data](runlab::GraphContext& ctx) {
                     return stdexec::then(stdexec::just(), [id, data, &ctx]() {
@@ -79,9 +126,8 @@ PYBIND11_MODULE(runlab_py, m) {
               engine.add_node(
                   id, {input},
                   [id, input, factor](runlab::GraphContext& ctx) {
-                    auto values = ctx.get<std::vector<float>>(input);
-                    auto sender =
-                      runlab::kernels::scale(std::move(values), factor);
+                    const auto values = ctx.get_span(input);
+                    auto sender = runlab::kernels::scale(values, factor);
                     return stdexec::then(
                       std::move(sender),
                       [&ctx, id](std::vector<float> output) {
@@ -97,10 +143,9 @@ PYBIND11_MODULE(runlab_py, m) {
               engine.add_node(
                   id, {left, right},
                   [id, left, right](runlab::GraphContext& ctx) {
-                    auto a = ctx.get<std::vector<float>>(left);
-                    auto b = ctx.get<std::vector<float>>(right);
-                    auto sender =
-                      runlab::kernels::add(std::move(a), std::move(b));
+                    const auto a = ctx.get_span(left);
+                    const auto b = ctx.get_span(right);
+                    auto sender = runlab::kernels::add(a, b);
                     return stdexec::then(
                       std::move(sender),
                       [&ctx, id](std::vector<float> output) {
@@ -115,8 +160,8 @@ PYBIND11_MODULE(runlab_py, m) {
               engine.add_node(
                   id, {input},
                   [id, input](runlab::GraphContext& ctx) {
-                    auto values = ctx.get<std::vector<float>>(input);
-                    auto sender = runlab::kernels::sum(std::move(values));
+                    const auto values = ctx.get_span(input);
+                    auto sender = runlab::kernels::sum(values);
                     return stdexec::then(
                       std::move(sender),
                       [&ctx, id](float total) { ctx.put(id, total); });
@@ -129,9 +174,8 @@ PYBIND11_MODULE(runlab_py, m) {
               engine.add_node(
                   id, {input},
                   [id, input](runlab::GraphContext& ctx) {
-                    auto values = ctx.get<std::vector<float>>(input);
-                    auto sender =
-                      runlab::kernels::compute_embedding(std::move(values));
+                    const auto values = ctx.get_span(input);
+                    auto sender = runlab::kernels::compute_embedding(values);
                     return stdexec::then(
                       std::move(sender),
                       [&ctx, id](std::vector<float> output) {
@@ -153,6 +197,10 @@ PYBIND11_MODULE(runlab_py, m) {
       })
       .def("get_vector",
            [](runlab::Engine& engine, const std::string& key) {
+             runlab::FloatSpan span;
+             if (engine.context().try_get<runlab::FloatSpan>(key, &span)) {
+               return ToArrayView(span);
+             }
              auto values = engine.context().get<std::vector<float>>(key);
              return ToArray(values);
            })

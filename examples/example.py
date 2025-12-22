@@ -5,7 +5,11 @@ import runlab_py as rl
 
 def main():
     engine = rl.Engine()
-    engine.add_node("input", "input", {"data": np.array([1.0, 2.0, 3.0, 4.0])})
+    engine.add_node(
+        "input",
+        "input",
+        {"data": np.ascontiguousarray([1.0, 2.0, 3.0, 4.0], dtype=np.float32)},
+    )
     engine.add_node("scaled", "scale", {"input": "input", "factor": 1.5})
     engine.add_node("embed", "embedding", {"input": "scaled"})
     engine.add_node("total", "sum", {"input": "embed"})

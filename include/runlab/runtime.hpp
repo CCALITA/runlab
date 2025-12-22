@@ -3,8 +3,10 @@
 #include <any>
 #include <exception>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <queue>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -18,6 +20,12 @@
 #include <stdexec/execution.hpp>
 
 namespace runlab {
+
+struct FloatSpan {
+  std::shared_ptr<void> owner;
+  const float* data = nullptr;
+  size_t size = 0;
+};
 
 class GraphContext {
  public:
@@ -45,6 +53,44 @@ class GraphContext {
       throw std::runtime_error("Missing key: " + key);
     }
     return std::any_cast<const T&>(it->second);
+  }
+
+  template <typename T>
+  bool try_get(const std::string& key, T* out) const {
+    std::lock_guard<std::mutex> lock(mu_);
+    auto it = blackboard_.find(key);
+    if (it == blackboard_.end()) {
+      return false;
+    }
+    auto* value = std::any_cast<T>(&it->second);
+    if (!value) {
+      return false;
+    }
+    if (out) {
+      *out = *value;
+    }
+    return true;
+  }
+
+  std::span<const float> get_span(const std::string& key) const {
+    std::lock_guard<std::mutex> lock(mu_);
+    auto it = blackboard_.find(key);
+    if (it == blackboard_.end()) {
+      throw std::runtime_error("Missing key: " + key);
+    }
+
+    if (auto* vec = std::any_cast<std::vector<float>>(&it->second)) {
+      return std::span<const float>(vec->data(), vec->size());
+    }
+    if (auto* vec_ptr =
+          std::any_cast<std::shared_ptr<std::vector<float>>>(&it->second)) {
+      return std::span<const float>((*vec_ptr)->data(), (*vec_ptr)->size());
+    }
+    if (auto* span = std::any_cast<FloatSpan>(&it->second)) {
+      return std::span<const float>(span->data, span->size);
+    }
+
+    throw std::runtime_error("Key has unsupported value type: " + key);
   }
 
   bool contains(const std::string& key) const {
