@@ -146,6 +146,18 @@ int main() {
     if (after_ran.load()) {
       return Fail("downstream node executed after error");
     }
+    if (engine.context().node_status("ok") != runlab::NodeStatus::kSuccess) {
+      return Fail("ok node status was not success");
+    }
+    if (engine.context().node_status("bad") != runlab::NodeStatus::kError) {
+      return Fail("bad node status was not error");
+    }
+    if (!engine.context().node_error("bad")) {
+      return Fail("bad node error was not recorded");
+    }
+    if (engine.context().node_status("after") != runlab::NodeStatus::kBlocked) {
+      return Fail("after node status was not blocked");
+    }
   }
 
   std::cout << "All tests passed.\n";

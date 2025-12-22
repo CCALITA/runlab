@@ -80,6 +80,19 @@ py::array_t<float> ToArrayView(const runlab::FloatSpan& span) {
       std::move(base));
 }
 
+std::string ExceptionToString(std::exception_ptr err) {
+  if (!err) {
+    return {};
+  }
+  try {
+    std::rethrow_exception(err);
+  } catch (const std::exception& e) {
+    return e.what();
+  } catch (...) {
+    return "unknown exception";
+  }
+}
+
 std::string RequireString(const py::dict& params, const char* key) {
   if (!params.contains(key)) {
     throw std::runtime_error(std::string("missing param: ") + key);
@@ -206,5 +219,26 @@ PYBIND11_MODULE(runlab_py, m) {
            })
       .def("get_float", [](runlab::Engine& engine, const std::string& key) {
         return engine.context().get<float>(key);
+      })
+      .def("node_status",
+           [](runlab::Engine& engine, const std::string& id) {
+             const auto status = engine.context().node_status(id);
+             return std::string(runlab::ToString(status));
+           })
+      .def("node_error",
+           [](runlab::Engine& engine, const std::string& id) -> py::object {
+             auto err = engine.context().node_error(id);
+             if (!err) {
+               return py::none();
+             }
+             return py::str(ExceptionToString(std::move(err)));
+           })
+      .def("node_statuses", [](runlab::Engine& engine) {
+        py::dict out;
+        const auto states = engine.context().node_states_snapshot();
+        for (const auto& [id, state] : states) {
+          out[py::str(id)] = py::str(runlab::ToString(state.status));
+        }
+        return out;
       });
 }

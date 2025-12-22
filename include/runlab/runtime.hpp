@@ -9,6 +9,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
@@ -27,8 +28,87 @@ struct FloatSpan {
   size_t size = 0;
 };
 
+enum class NodeStatus {
+  kPending,
+  kRunning,
+  kSuccess,
+  kError,
+  kBlocked,
+};
+
+inline auto ToString(NodeStatus status) -> const char* {
+  switch (status) {
+    case NodeStatus::kPending:
+      return "pending";
+    case NodeStatus::kRunning:
+      return "running";
+    case NodeStatus::kSuccess:
+      return "success";
+    case NodeStatus::kError:
+      return "error";
+    case NodeStatus::kBlocked:
+      return "blocked";
+  }
+  return "unknown";
+}
+
+struct NodeState {
+  NodeStatus status = NodeStatus::kPending;
+  std::exception_ptr error;
+};
+
 class GraphContext {
  public:
+  void reset_run_state() {
+    std::lock_guard<std::mutex> lock(mu_);
+    error_ = nullptr;
+    for (auto& [_, state] : node_states_) {
+      state.status = NodeStatus::kPending;
+      state.error = nullptr;
+    }
+  }
+
+  void init_nodes(const std::vector<std::string>& node_ids) {
+    std::lock_guard<std::mutex> lock(mu_);
+    node_states_.clear();
+    node_states_.reserve(node_ids.size());
+    for (const auto& id : node_ids) {
+      node_states_.emplace(id, NodeState{});
+    }
+  }
+
+  void set_node_status(std::string_view id,
+                       NodeStatus status,
+                       std::exception_ptr err = nullptr) {
+    std::lock_guard<std::mutex> lock(mu_);
+    auto& state = node_states_[std::string(id)];
+    state.status = status;
+    state.error = std::move(err);
+  }
+
+  NodeStatus node_status(const std::string& id) const {
+    std::lock_guard<std::mutex> lock(mu_);
+    auto it = node_states_.find(id);
+    if (it == node_states_.end()) {
+      return NodeStatus::kPending;
+    }
+    return it->second.status;
+  }
+
+  std::exception_ptr node_error(const std::string& id) const {
+    std::lock_guard<std::mutex> lock(mu_);
+    auto it = node_states_.find(id);
+    if (it == node_states_.end()) {
+      return nullptr;
+    }
+    return it->second.error;
+  }
+
+  std::unordered_map<std::string, NodeState> node_states_snapshot() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    return node_states_;
+  }
+
   template <typename T>
   void put(std::string key, T value) {
     std::lock_guard<std::mutex> lock(mu_);
@@ -109,6 +189,7 @@ class GraphContext {
     std::lock_guard<std::mutex> lock(mu_);
     blackboard_.clear();
     error_ = nullptr;
+    node_states_.clear();
   }
 
   bool has_error() const {
@@ -126,6 +207,7 @@ class GraphContext {
  private:
   mutable std::mutex mu_;
   std::unordered_map<std::string, std::any> blackboard_;
+  std::unordered_map<std::string, NodeState> node_states_;
   std::exception_ptr error_;
 };
 
@@ -225,6 +307,8 @@ class Graph {
       return;
     }
 
+    ctx.reset_run_state();
+
     auto sched = pool.get_scheduler();
     std::unordered_map<std::string, std::vector<std::string>> adj;
     std::unordered_map<std::string, int> dep_counts;
@@ -250,6 +334,13 @@ class Graph {
       throw std::runtime_error("Graph has a cycle");
     }
 
+    std::vector<std::string> node_ids;
+    node_ids.reserve(nodes_.size());
+    for (const auto& [id, _] : nodes_) {
+      node_ids.push_back(id);
+    }
+    ctx.init_nodes(node_ids);
+
     std::unordered_map<std::string, SharedTaskSender> tasks;
     tasks.reserve(nodes_.size());
 
@@ -262,18 +353,33 @@ class Graph {
       }
 
       auto deps_barrier = CombineAll(std::move(deps));
-      auto base_sender = stdexec::let_value(
+      auto deps_or_blocked = stdexec::let_error(
         std::move(deps_barrier),
-        [make_task = node.make_task, &ctx, sched]() mutable {
-          return stdexec::starts_on(sched, make_task(ctx));
-        });
-      auto with_error = stdexec::let_error(
-        std::move(base_sender),
-        [&ctx](std::exception_ptr err) {
-          ctx.set_error(err);
+        [&ctx, id](std::exception_ptr err) {
+          ctx.set_node_status(id, NodeStatus::kBlocked, err);
           return stdexec::just_error(std::move(err));
         });
-      auto shared_sender = stdexec::split(std::move(with_error));
+
+      auto task_sender = stdexec::let_value(
+        std::move(deps_or_blocked),
+        [make_task = node.make_task, &ctx, sched, id]() mutable {
+          ctx.set_node_status(id, NodeStatus::kRunning);
+          auto started = stdexec::starts_on(sched, make_task(ctx));
+          auto success =
+            stdexec::then(std::move(started),
+                          [&ctx, id]() { ctx.set_node_status(id, NodeStatus::kSuccess); });
+          auto tracked =
+            stdexec::let_error(
+              std::move(success),
+              [&ctx, id](std::exception_ptr err) {
+                ctx.set_node_status(id, NodeStatus::kError, err);
+                ctx.set_error(err);
+                return stdexec::just_error(std::move(err));
+              });
+          return tracked;
+        });
+
+      auto shared_sender = stdexec::split(std::move(task_sender));
       tasks.emplace(id, SharedTaskSender(std::move(shared_sender)));
     }
 
