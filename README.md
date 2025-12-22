@@ -93,3 +93,14 @@ stdexec::sync_wait(std::move(snd));
 - `engine.node_status(id)` / `engine.node_statuses()` help debug failed runs.
 - Sender/receiver is based on C++26 P2300 (`std::execution` / stdexec). A local
   reference copy exists at `thirdparty/stdexec/examples/hello_world.cpp`.
+
+## Direction: stdexec-native dataflow runtime (WIP)
+
+The current runtime (`include/runlab/runtime.hpp`) supports orchestration via a
+shared blackboard. The next iteration removes shared data contexts and models the
+DAG as pure stdexec dataflow:
+
+- Data moves as sender values along edges (no `GraphContext` for data transport).
+- Nodes are restricted to `kernel_id + config + input edges` (no per-node lambdas).
+- Kernels acquire resources via the receiver environment (allocator/device/etc.).
+- Running a graph returns a sender; `sync_wait` is optional at the boundary.

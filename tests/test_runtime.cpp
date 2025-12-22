@@ -10,6 +10,7 @@
 
 #include <stdexec/execution.hpp>
 
+#include "runlab/dataflow.hpp"
 #include "runlab/kernels.hpp"
 #include "runlab/runtime.hpp"
 
@@ -248,6 +249,50 @@ int main() {
     stdexec::sync_wait(std::move(snd));
     if (engine.context("s").get<int>("x") != 7) {
       return Fail("start_graph sender did not run");
+    }
+  }
+
+  {
+    using namespace runlab::dataflow;
+
+    auto registry = std::make_shared<KernelRegistry>();
+    registry->register_kernel(KernelDef{
+      .id = "add_f",
+      .arity = 2,
+      .invoke =
+        [](const std::any&, std::vector<Value> inputs) -> AnyValueSender {
+          if (inputs.size() != 2) {
+            throw std::runtime_error("add_f expects 2 inputs");
+          }
+          const auto* a = std::get_if<float>(&inputs[0]);
+          const auto* b = std::get_if<float>(&inputs[1]);
+          if (!a || !b) {
+            throw std::runtime_error("add_f expects float inputs");
+          }
+          return AnyValueSender(stdexec::just(Value{*a + *b}));
+        },
+    });
+
+    GraphBuilder g;
+    g.add_input("a");
+    g.add_input("b");
+    g.add_node("sum", "add_f", std::any{}, {"a", "b"});
+    g.set_outputs({"sum"});
+
+    auto compiled = g.compile(registry);
+    auto out_opt = stdexec::sync_wait(
+      compiled.sender(InputMap{{"a", Value{1.5f}}, {"b", Value{2.5f}}}));
+    if (!out_opt) {
+      return Fail("dataflow graph was stopped");
+    }
+    auto out = std::get<0>(*out_opt);
+    auto it = out.find("sum");
+    if (it == out.end()) {
+      return Fail("dataflow output missing");
+    }
+    const auto* sum = std::get_if<float>(&it->second);
+    if (!sum || std::fabs(*sum - 4.0f) > 0.001f) {
+      return Fail("dataflow output unexpected");
     }
   }
 

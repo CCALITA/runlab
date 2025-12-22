@@ -43,40 +43,36 @@ namespace kernels {
     }
 }
 L2: 动态图运行时层 (Graph Runtime Layer)
-定位: 系统的“调度中心”。负责将 L1 产生的异构 Sender 统一化，管理任务依赖与生命周期。
+定位: 系统的“调度中心”。负责将 Kernel 组装成 stdexec DAG（sender 图），并管理依赖解析、调度与生命周期。
 
 设计原则:
 
-Type Erasure (any_sender): 这是本层核心。将 L1 返回的 Sender<T> 包装进 any_sender<void>。此时丢失了具体的返回值类型信息，统一变为“可执行的任务”。
+Type Erasure (any_sender): 用于动态构图（尤其是 Python DSL）时的多态边界；L2 内部仍以 sender 组合方式编排。
 
-Blackboard Pattern (黑板模式): 由于 Sender 类型被擦除，返回值无法直接通过 C++ 强类型传递。因此，算子执行的副作用 (Side Effect) 是将结果写入一个共享的 Context (黑板)。
+Stdexec-Native Dataflow (Value Channel): 新设计以 sender 的 value channel 传递数据：Node A 的输出值直接成为 Node B 的输入值；不依赖共享黑板作为数据通道。
+
+Kernel-Only Orchestration: DAG 节点被严格限制为 `kernel_id + config + input edges`；运行时负责组装/验证/调度，不接受任意业务 lambda 作为节点逻辑。
+
+Resource via Env: Kernel 所需的 allocator/device/IO/logging 等资源通过 receiver environment 注入（monad-style），避免全局上下文与隐式依赖。
 
 Thread Pool Scheduling: 使用 stdexec::static_thread_pool 或自定义的 io_uring_context。
 
-关键数据结构:
+关键数据结构（建议方向）:
 
 C++
 
-// 统一的任务句柄：不返回具体值，只抛出异常
-using DynTask = stdexec::any_sender_of<void, std::exception_ptr>;
+// 动态图：用 Value 表示运行时数据（按需求收敛类型集合，避免任意 std::any 扩散）
+using Value = /* e.g. std::variant<float, std::vector<float>, ...> */;
+using DynValueSender = /* any_sender<set_value(Value), set_error(exception_ptr), ...> */;
 
-struct GraphContext {
-    // 线程安全的黑板，用于存储算子中间结果
-    // Key: NodeID, Value: Any Data
-    tbb::concurrent_hash_map<std::string, std::any> black_board;
+struct NodeSpec {
+    std::string id;
+    std::string kernel_id;
+    /* decoded config */;
+    std::vector<std::string> inputs; // input edges (upstream node ids / ports)
 };
 
-class Node {
-    DynTask _task; // 类型擦除后的任务
-    std::vector<std::string>_deps; // 依赖的 Node ID
-
-public:
-    // 泛型 Setter：在此处发生 "Static -> Dynamic" 的转换
-    template<typename StaticSender>
-    void set_logic(StaticSender&& s) {
-        _task = stdexec::ensure_started(std::forward<StaticSender>(s));
-    }
-};
+// KernelRegistry 负责：kernel_id -> (config decode/validate) + invoke(...) -> sender
 L3: Python 绑定层 (Python DSL Layer)
 定位: 系统的“控制台”。暴露给最终用户，用于定义图的拓扑结构。
 
@@ -99,14 +95,8 @@ C++ 层将 Sender 擦除类型存入 L2 Node。
 Python 调用 engine.run() -> C++ 释放 GIL -> C++ 线程池狂奔 -> 结束获取 GIL -> 返回。
 
 3. 核心机制说明
-3.1 数据流转：黑板模式 (The Blackboard Pattern)
-由于 any_sender 擦除了类型，我们也切断了 Node A -> return int -> Node B 的直接编译期链路。我们采用**“发布/订阅”**式的黑板模式：
-
-Producer (Node A): 内部逻辑是 fetch(input) -> calc -> context.put("A_result", res)。
-
-Consumer (Node B): 内部逻辑是 res = context.get<int>("A_result") -> calc。
-
-优势: 解耦了节点的编译期依赖，允许 Python 动态改变图结构。 劣势: 引入了 std::any_cast 的运行时检查开销（可忽略不计）。
+3.1 数据流转：Value Channel (Stdexec Dataflow)
+Node A 的 sender 以 `set_value(out)` 完成；Node B 通过 `let_value(A, ...)` 获取 `out` 并继续构建 sender。中间结果不落地到共享黑板，仅在 sink 处收集为最终输出。
 
 3.2 异常处理 (Error Propagation)
 stdexec 提供了专门的 set_error 通道。
@@ -150,3 +140,4 @@ L3: C++ 捕获 std::exception_ptr，转换为 Python 的 RuntimeError 并抛回�
 - Added runtime tests for error propagation and concurrent scheduling.
 - Build + ctest run completed; Python example blocked by missing NumPy.
 - Refactored runtime to build DAG execution with stdexec senders (split/when_all/sync_wait).
+- Planning next runtime iteration: kernel registry + stdexec value-channel DAG (no shared blackboard for data).
