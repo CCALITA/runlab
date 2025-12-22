@@ -204,6 +204,7 @@ PYBIND11_MODULE(runlab_py, m) {
           py::arg("params") = py::dict())
       .def("add_edge", &runlab::Engine::add_edge)
       .def("clear", &runlab::Engine::clear)
+      .def("validate", &runlab::Engine::validate)
       .def("run", [](runlab::Engine& engine) {
         py::gil_scoped_release release;
         engine.run();

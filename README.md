@@ -47,5 +47,7 @@ print(engine.get_float("total"))
   NumPy arrays by storing a buffer-backed view in the runtime blackboard.
 - Importing the built extension typically requires adding `build/` to your module
   search path (the provided `examples/example.py` does `sys.path.insert(0, "build")`).
+- `engine.validate()` returns a topological order and raises on missing deps/cycles.
+- `engine.node_status(id)` / `engine.node_statuses()` help debug failed runs.
 - Sender/receiver is based on C++26 P2300 (`std::execution` / stdexec). A local
   reference copy exists at `thirdparty/stdexec/examples/hello_world.cpp`.

@@ -302,6 +302,33 @@ class Graph {
 
   void clear() { nodes_.clear(); }
 
+  std::vector<std::string> validate() const {
+    if (nodes_.empty()) {
+      return {};
+    }
+
+    std::unordered_map<std::string, std::vector<std::string>> adj;
+    std::unordered_map<std::string, int> dep_counts;
+    adj.reserve(nodes_.size());
+    dep_counts.reserve(nodes_.size());
+
+    for (const auto& [id, node] : nodes_) {
+      dep_counts[id] = static_cast<int>(node.deps.size());
+      for (const auto& dep : node.deps) {
+        if (nodes_.find(dep) == nodes_.end()) {
+          throw std::runtime_error("Missing dependency: " + dep);
+        }
+        adj[dep].push_back(id);
+      }
+    }
+
+    auto order = TopologicalOrder(dep_counts, adj);
+    if (order.size() != nodes_.size()) {
+      throw std::runtime_error("Graph has a cycle");
+    }
+    return order;
+  }
+
   void run(GraphContext& ctx, exec::static_thread_pool& pool) const {
     if (nodes_.empty()) {
       return;
@@ -463,6 +490,8 @@ class Engine {
   }
 
   void run() { graph_.run(ctx_, pool_); }
+
+  std::vector<std::string> validate() const { return graph_.validate(); }
 
   const GraphContext& context() const { return ctx_; }
 

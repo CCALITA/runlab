@@ -22,3 +22,4 @@
 - Zero-copy NumPy input buffers (1-D, C-contiguous float32)
 - Document NumPy requirements and `build/` module path
 - Track per-node status and error causes
+- Add `Engine.validate()` for graph validation/toposort
