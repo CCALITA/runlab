@@ -19,7 +19,45 @@
 - include/runlab/sender.hpp
 - include/runlab/kernels.hpp
 - include/runlab/runtime.hpp
+- include/runlab/dataflow.hpp
 - bindings/pybind_module.cpp
 - README.md
 - examples/example.py
 - tests/test_runtime.cpp
+
+## Next: stdexec-native runtime API (dataflow)
+
+Goals:
+- Build DAGs at runtime, but run as pure stdexec dataflow (no shared blackboard for data).
+- Restrict orchestration to `kernel_id + config + input edges`; kernel is the compute unit.
+- Manage resources monad-style via receiver env (no explicit “context” object).
+
+Proposed public surface (C++):
+```cpp
+namespace runlab::dataflow {
+struct KernelDef {
+  std::string id;
+  size_t arity;
+  // Prototype: runtime snapshots env resources once and passes them explicitly.
+  AnyValueSender (*invoke)(
+    const std::any& cfg,
+    std::vector<Value> inputs,
+    const Resources& resources);
+};
+
+class KernelRegistry;   // kernel_id -> KernelDef
+class GraphBuilder;     // add_input/add_node/set_outputs
+class CompiledGraph {   // immutable; validated topo order
+ public:
+  auto sender(InputMap inputs) const; // reads scheduler from env
+};
+} // namespace runlab::dataflow
+```
+
+Resource injection pattern:
+- Define forwarding env queries (e.g. `get_resources`) and attach with
+  `stdexec::write_env(sender, exec::with(get_resources, Resources{...}))`.
+- Current implementation reads resources at the graph boundary (via
+  `exec::read_with_default`) and passes a `Resources` snapshot to kernels. Fully
+  env-driven kernels will require a different type-erasure strategy (the current
+  `exec::any_sender` path erases most receiver env queries).

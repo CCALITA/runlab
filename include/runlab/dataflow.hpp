@@ -182,14 +182,13 @@ struct NodeSpec {
 class CompiledGraph {
  public:
   auto sender(InputMap inputs) const {
-    auto built = stdexec::let_value(
+    return stdexec::let_value(
       stdexec::when_all(
         stdexec::get_scheduler(),
         exec::read_with_default(get_resources, Resources{})),
       [this, inputs = std::move(inputs)](auto sched, Resources resources) mutable {
-        return build_sender(std::move(inputs), std::move(sched), resources);
+        return build_sender(std::move(inputs), std::move(sched), std::move(resources));
       });
-    return built;
   }
 
   const std::vector<std::string>& order() const { return order_; }
