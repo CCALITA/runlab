@@ -8,7 +8,7 @@
 - Kernel registry + restricted node specs (kernel + config + inputs)
 - Graph outputs as sender values (no blackboard reads)
 - Env-based resource injection (allocator/device/logging)
-- Env-preserving type erasure for dynamic kernels (custom `EnvAnySender`)
+- Env-friendly sum-type sender box (fat-pointer) to avoid vtables while keeping runtime dispatch
 
 ## Python layer
 - Richer DSL helpers (node builders, graph validation)
@@ -33,3 +33,4 @@
 - Control/data split via `Graph::compile()` -> `CompiledGraph` (pure C++ run)
 - Stdexec-native entrypoints (`Graph::sender`, `Engine::start_*`)
 - Env-based resource injection (dataflow, via receiver env queries)
+- Kernel binding step for dataflow runtime (config decoded once; kernels are pure sender factories)

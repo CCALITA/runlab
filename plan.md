@@ -13,6 +13,9 @@
 - Expanded tests for error propagation and concurrent scheduling
 - Build + ctest run completed after stdexec DAG refactor
 - Python example currently requires NumPy and module path setup (e.g. PYTHONPATH=build)
+- Dataflow runtime now binds kernels at compile-time: `KernelDef::bind(config)` produces a pure
+  `KernelFn(inputs, resources) -> AnyValueSender`, and `GraphBuilder::compile` installs it on each
+  node (no registry lookup during execution).
 
 ## Files
 - CMakeLists.txt
@@ -31,8 +34,8 @@ Goals:
 - Build DAGs at runtime, but run as pure stdexec dataflow (no shared blackboard for data).
 - Restrict orchestration to `kernel_id + config + input edges`; kernel is the compute unit.
 - Manage resources monad-style via receiver env (no explicit “context” object).
-- Snapshot `Resources` from the receiver env at graph entry; pass into kernels while we
-  figure out an env-preserving type erasure strategy.
+- Snapshot `Resources` from the receiver env at graph entry; pass into kernels while binding
+  to avoid env lookups inside the compute path.
 - Added dataflow tests covering bias injection and fan-out with resource usage.
 
 Proposed public surface (C++):
@@ -41,11 +44,8 @@ namespace runlab::dataflow {
 struct KernelDef {
   std::string id;
   size_t arity;
-  // Prototype: runtime snapshots env resources once and passes them explicitly.
-  AnyValueSender (*invoke)(
-    const std::any& cfg,
-    std::vector<Value> inputs,
-    const Resources& resources);
+  // bind(config) -> pure kernel function; runtime injects config/DSL at bind time.
+  std::function<KernelFn(const std::any& config)> bind;
 };
 
 class KernelRegistry;   // kernel_id -> KernelDef
@@ -61,25 +61,16 @@ Resource injection pattern:
 - Define forwarding env queries (e.g. `get_resources`) and attach with
   `stdexec::write_env(sender, exec::with(get_resources, Resources{...}))`.
 - Current implementation reads resources at the graph boundary (via
-  `exec::read_with_default`) and passes a `Resources` snapshot to kernels. Fully
-  env-driven kernels will require a different type-erasure strategy (the current
-  `exec::any_sender` path erases most receiver env queries).
+  `exec::read_with_default`) and passes a `Resources` snapshot to kernels. We keep
+  `exec::any_sender` as the type-erasure boundary but aim to avoid additional
+  vtables; each node runs a single concrete sender type produced at bind time.
 
-### Next spike: env-preserving type erasure (stdexec-native)
-
-Goal: let kernels query resources directly from the receiver env without an
-explicit `Resources` argument while keeping runtime dynamic dispatch.
-
-Plan:
-- Introduce `EnvAnySender<Sigs, Queries...>` that preserves a chosen set of env
-  queries through type erasure. Avoid `exec::any_sender` because it filters
-  custom queries when receivers are erased.
-- Storage: move-only box holding the concrete sender and a vtable of
-  `{connect, get_env, destroy}`; `get_env` returns a wrapper that forwards all
-  `Queries...` to the underlying sender env.
-- Kernel signature becomes `AnyValueEnvSender invoke(const std::any&, std::vector<Value>)`.
-- Graph wiring still uses `stdexec::split/when_all/starts_on`; value channels
-  stay unchanged.
-- Migration path: keep the current `Resources` snapshot code as a fallback while
-  adding the new box; add tests that inject `get_resources` and assert kernels
-  can `exec::read_with_default(get_resources, ...)` inside their returned sender.
+### Next steps
+- Tighten DSL/path: keep node spec to `kernel_id + config + inputs`; reject lambdas
+  in orchestration.
+- Explore sum-type sender box (fat-pointer) if we need runtime dispatch without
+  virtual calls, while preserving env queries.
+- Extend tests to cover multiple compiled DAGs running in parallel and resource
+  snapshots per graph.
+- Document the kernel binding contract (config decoded once; kernels pure) and
+  migration path for the Python DSL.

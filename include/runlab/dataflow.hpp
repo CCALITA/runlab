@@ -5,6 +5,7 @@
 #include <exception>
 #include <functional>
 #include <memory>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -57,6 +58,9 @@ using AnyValueSender = exec::any_receiver_ref<
 
 using AnyOutputSender = exec::any_receiver_ref<
   OutputSignatures>::template any_sender<>;
+
+using KernelFn =
+  std::function<AnyValueSender(std::vector<Value> inputs, const Resources& resources)>;
 
 class SharedVoidSender {
  public:
@@ -153,17 +157,14 @@ inline SharedVoidSender CombineAll(std::vector<SharedVoidSender> tasks,
 struct KernelDef {
   std::string id;
   size_t arity = 0;
-  std::function<AnyValueSender(const std::any& config,
-                               std::vector<Value> inputs,
-                               const Resources& resources)>
-    invoke;
+  std::function<KernelFn(const std::any& config)> bind;
 };
 
 class KernelRegistry {
  public:
   void register_kernel(KernelDef def) {
-    if (!def.invoke) {
-      throw std::runtime_error("KernelDef.invoke must be set");
+    if (!def.bind) {
+      throw std::runtime_error("KernelDef.bind must be set");
     }
     if (def.id.empty()) {
       throw std::runtime_error("KernelDef.id must be set");
@@ -188,6 +189,7 @@ struct NodeSpec {
   std::string kernel_id;
   std::any config;
   std::vector<std::string> inputs;
+  KernelFn kernel;
 };
 
 class CompiledGraph {
@@ -209,12 +211,10 @@ class CompiledGraph {
 
   CompiledGraph(std::unordered_map<std::string, NodeSpec> nodes,
                 std::vector<std::string> order,
-                std::vector<std::string> outputs,
-                std::shared_ptr<const KernelRegistry> registry)
+                std::vector<std::string> outputs)
       : nodes_(std::move(nodes)),
         order_(std::move(order)),
-        outputs_(std::move(outputs)),
-        registry_(std::move(registry)) {}
+        outputs_(std::move(outputs)) {}
 
   template <class Scheduler>
     requires stdexec::scheduler<Scheduler>
@@ -242,9 +242,11 @@ class CompiledGraph {
         continue;
       }
 
-      const auto& kernel = registry_->get(node.kernel_id);
-      if (kernel.arity != node.inputs.size()) {
-        throw std::runtime_error("Kernel arity mismatch for node: " + id);
+      if (!node.kernel) {
+        throw std::runtime_error("Kernel not bound for node: " + id);
+      }
+      if (node.inputs.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        throw std::runtime_error("Too many inputs for node: " + id);
       }
 
       auto values = std::make_shared<std::vector<Value>>(node.inputs.size());
@@ -268,8 +270,8 @@ class CompiledGraph {
       auto deps_barrier = CombineAll(std::move(dep_writes), *resources_ptr);
       auto node_sender = stdexec::let_value(
         std::move(deps_barrier),
-        [kernel, config = node.config, values, resources_ptr]() mutable {
-          return kernel.invoke(config, std::move(*values), *resources_ptr);
+        [fn = node.kernel, values, resources_ptr]() mutable {
+          return fn(std::move(*values), *resources_ptr);
         });
       auto seeded =
         stdexec::write_env(std::move(node_sender), exec::with(get_resources, *resources_ptr));
@@ -304,7 +306,6 @@ class CompiledGraph {
   std::unordered_map<std::string, NodeSpec> nodes_;
   std::vector<std::string> order_;
   std::vector<std::string> outputs_;
-  std::shared_ptr<const KernelRegistry> registry_;
 };
 
 class GraphBuilder {
@@ -352,7 +353,15 @@ class GraphBuilder {
 
     for (const auto& [id, node] : nodes) {
       if (node.kernel_id != "__input__") {
-        registry->get(node.kernel_id);
+        const auto& def = registry->get(node.kernel_id);
+        if (def.arity != node.inputs.size()) {
+          throw std::runtime_error("Kernel arity mismatch for node: " + id);
+        }
+        auto bound = def.bind(node.config);
+        if (!bound) {
+          throw std::runtime_error("Kernel binding returned empty function for node: " + id);
+        }
+        nodes[id].kernel = std::move(bound);
       }
 
       indeg[id] = static_cast<int>(node.inputs.size());
@@ -399,7 +408,7 @@ class GraphBuilder {
       }
     }
 
-    return CompiledGraph(std::move(nodes), std::move(order), outputs_, std::move(registry));
+    return CompiledGraph(std::move(nodes), std::move(order), outputs_);
   }
 
  private:

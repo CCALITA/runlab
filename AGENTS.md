@@ -1,53 +1,33 @@
 # Repository Guidelines
 
-## Project Structure
+## Project Structure & Module Map
+- `include/runlab/`: C++20 headers. `runtime.hpp` hosts the thread-pool DAG engine; `dataflow.hpp` is the stdexec-native runtime (pure value channels, kernel registry binding). `kernels.hpp` holds sample sender-based kernels; `sender.hpp` has helper adapters.
+- `bindings/pybind_module.cpp`: pybind11 layer that wraps the runtime; keep the C++ surface small and sender-native.
+- `tests/`: C++ test executables (see `tests/test_runtime.cpp` for end-to-end DAG checks).
+- `examples/`: quick usage samples (Python and C++).
+- `thirdparty/stdexec/`: vendored stdexec. Treat as upstream-only.
 
-- `include/runlab/`: C++20 public headers (core runtime + kernels; see
-  `include/runlab/dataflow.hpp` for the stdexec DAG runtime that snapshots `Resources`
-  from the receiver env).
-- `bindings/`: pybind11 module (`bindings/pybind_module.cpp`) exposing a small Python DSL.
-- `tests/`: C++ executable tests (currently `tests/test_runtime.cpp`).
-- `examples/`: small usage snippets (e.g., `examples/example.py`).
-- `thirdparty/stdexec/`: vendored stdexec headers and docs; treat as upstream code.
+## Runtime & API Expectations
+- Kernels are pure sender factories: shape `KernelFn(std::vector<Value>, const Resources&) -> AnyValueSender`. No shared `context` mutation inside kernels.
+- Graph orchestration is restricted to `kernel_id + config + inputs`; `GraphBuilder::compile` binds `KernelDef::bind(config)` once and runs a single concrete sender type per node. Inject DSL/config at the binding layer, not inside kernels.
+- Resources (e.g., bias/allocators) flow through the receiver env. Attach with `stdexec::write_env(sender, exec::with(get_resources, ...))`; the runtime snapshots once per graph.
+- Multiple DAGs can be installed and run independently; keep graph IDs unique and contexts isolated.
 
-## Build, Test, and Development Commands
+## Build, Test, and Dev Commands
+- Configure: `cmake -S . -B build` (add `-DCMAKE_BUILD_TYPE=Debug` as needed).
+- Build: `cmake --build build`.
+- Tests: `ctest --test-dir build` or `./build/runlab_tests`.
+- Python example (after building with bindings on): `python examples/example.py`.
 
-This repo uses CMake (see `CMakeLists.txt`).
-
-- Configure + build:
-  - `cmake -S . -B build`
-  - `cmake --build build`
-- Run tests (after building):
-  - `ctest --test-dir build` (runs `runlab_tests`)
-  - or `./build/runlab_tests`
-- Common options:
-  - `-DCMAKE_BUILD_TYPE=Debug`
-  - `-DRUNLAB_BUILD_PYTHON=OFF` (skip pybind11 module)
-  - `-DRUNLAB_BUILD_TESTS=OFF` (skip tests)
-
-Python usage after building (module lands in `build/`):
-- `python examples/example.py`
-
-## Coding Style & Naming Conventions
-
-- C++: match existing formatting (2-space indentation, braces on the same line).
-- Naming: types in `PascalCase` (e.g., `GraphContext`), functions/methods in
-  `snake_case` (e.g., `add_node`), files in `lower_snake_case` (e.g., `runtime.hpp`).
-- Keep headers self-contained and prefer small, targeted changes.
-- No repo-wide formatter config is enforced; keep diffs consistent with nearby code.
+## Coding Style & Naming
+- Follow existing 2-space C++ style; brace-on-line. Headers should be self-contained.
+- Types `PascalCase`, functions `snake_case`, files `lower_snake_case`.
+- Prefer stdexec-native composition; avoid new type erasure layers unless aligned with `exec::any_sender`.
 
 ## Testing Guidelines
+- Keep tests minimal and direct (non-framework). Mirror patterns in `tests/test_runtime.cpp`: deterministic inputs, explicit failure messages, non-zero exit on failure.
+- When adding kernels, cover both success and error propagation; verify fan-out/fan-in if applicable.
 
-- Tests are plain C++ programs (no external framework). Follow the pattern in
-  `tests/test_runtime.cpp`: return non-zero on failure and print a clear message.
-- Add new tests under `tests/` and wire them up in `CMakeLists.txt` if you create
-  additional executables.
-
-## Commit & Pull Request Guidelines
-
-- Commit messages in history are short, imperative summaries (e.g., “Vendor stdexec”).
-  Prefer `Verb object` subjects and keep them scoped.
-- PRs should include: what changed, how to reproduce, commands run (`cmake`, `ctest`),
-  and any API/behavior notes. Include a minimal Python snippet if bindings change.
-- Avoid modifying `thirdparty/stdexec/` unless you are intentionally updating the vendor
-  drop; keep such changes isolated.
+## Commit & PR Guidelines
+- Use short, imperative subjects (e.g., `Add bias kernel binding`). Separate logical changes.
+- PRs should state behavior changes, key commands run (`cmake`, `ctest`), and any API notes (kernel signatures, env queries). Include repro snippets if bindings or DSL change.

@@ -259,8 +259,9 @@ int main() {
     registry->register_kernel(KernelDef{
       .id = "add_f",
       .arity = 2,
-      .invoke =
-        [](const std::any&, std::vector<Value> inputs, const Resources&) -> AnyValueSender {
+      .bind =
+        [](const std::any&) -> KernelFn {
+        return [](std::vector<Value> inputs, const Resources&) -> AnyValueSender {
           if (inputs.size() != 2) {
             throw std::runtime_error("add_f expects 2 inputs");
           }
@@ -270,7 +271,8 @@ int main() {
             throw std::runtime_error("add_f expects float inputs");
           }
           return AnyValueSender(stdexec::just(Value{*a + *b}));
-        },
+        };
+      },
     });
 
     GraphBuilder g;
@@ -303,9 +305,9 @@ int main() {
     registry->register_kernel(KernelDef{
       .id = "add_bias",
       .arity = 1,
-      .invoke =
-        [](const std::any&, std::vector<Value> inputs, const Resources& resources)
-        -> AnyValueSender {
+      .bind =
+        [](const std::any&) -> KernelFn {
+        return [](std::vector<Value> inputs, const Resources& resources) -> AnyValueSender {
           if (inputs.size() != 1) {
             throw std::runtime_error("add_bias expects 1 input");
           }
@@ -314,7 +316,8 @@ int main() {
             throw std::runtime_error("add_bias expects float input");
           }
           return AnyValueSender(stdexec::just(Value{*x + resources.bias}));
-        },
+        };
+      },
     });
 
     GraphBuilder g;
@@ -349,9 +352,9 @@ int main() {
     registry->register_kernel(KernelDef{
       .id = "add_bias",
       .arity = 1,
-      .invoke =
-        [](const std::any&, std::vector<Value> inputs, const Resources& resources)
-        -> AnyValueSender {
+      .bind =
+        [](const std::any&) -> KernelFn {
+        return [](std::vector<Value> inputs, const Resources& resources) -> AnyValueSender {
           if (inputs.size() != 1) {
             throw std::runtime_error("add_bias expects 1 input");
           }
@@ -360,7 +363,8 @@ int main() {
             throw std::runtime_error("add_bias expects float input");
           }
           return AnyValueSender(stdexec::just(Value{*x + resources.bias}));
-        },
+        };
+      },
     });
 
     GraphBuilder g;
