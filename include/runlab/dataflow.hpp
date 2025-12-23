@@ -8,8 +8,10 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -19,6 +21,8 @@
 #include <stdexec/execution.hpp>
 
 namespace runlab::dataflow {
+
+inline constexpr std::string_view kInputKernelId = "__input__";
 
 struct Resources {
   float bias = 0.0f;
@@ -169,7 +173,14 @@ class KernelRegistry {
     if (def.id.empty()) {
       throw std::runtime_error("KernelDef.id must be set");
     }
-    kernels_[def.id] = std::move(def);
+    if (def.id == kInputKernelId) {
+      throw std::runtime_error("Kernel id is reserved for graph inputs: " + def.id);
+    }
+    if (kernels_.find(def.id) != kernels_.end()) {
+      throw std::runtime_error("Kernel already registered: " + def.id);
+    }
+    auto id = def.id;
+    kernels_.emplace(std::move(id), std::move(def));
   }
 
   const KernelDef& get(const std::string& id) const {
@@ -228,7 +239,7 @@ class CompiledGraph {
     for (const auto& id : order_) {
       const auto& node = nodes_.at(id);
 
-      if (node.kernel_id == "__input__") {
+      if (node.kernel_id == kInputKernelId) {
         auto s = stdexec::then(stdexec::just(), [inputs_ptr, id]() -> Value {
           auto it = inputs_ptr->find(id);
           if (it == inputs_ptr->end()) {
@@ -311,7 +322,7 @@ class CompiledGraph {
 class GraphBuilder {
  public:
   void add_input(std::string id) {
-    add_node(NodeSpec{.id = std::move(id), .kernel_id = "__input__"});
+    add_node(NodeSpec{.id = std::move(id), .kernel_id = std::string(kInputKernelId)});
   }
 
   void add_node(std::string id,
@@ -339,7 +350,20 @@ class GraphBuilder {
       if (n.id.empty()) {
         throw std::runtime_error("NodeSpec.id must be set");
       }
-      nodes[n.id] = n;
+      const bool is_input = n.kernel_id == kInputKernelId;
+      if (!is_input && n.kernel_id.empty()) {
+        throw std::runtime_error("NodeSpec.kernel_id must be set");
+      }
+      if (is_input && !n.inputs.empty()) {
+        throw std::runtime_error("Graph input cannot have dependencies: " + n.id);
+      }
+      if (is_input && n.config.has_value()) {
+        throw std::runtime_error("Graph input cannot have config: " + n.id);
+      }
+      const auto [it, inserted] = nodes.emplace(n.id, n);
+      if (!inserted) {
+        throw std::runtime_error("Duplicate node id: " + n.id);
+      }
     }
 
     if (outputs_.empty()) {
@@ -351,8 +375,8 @@ class GraphBuilder {
     indeg.reserve(nodes.size());
     adj.reserve(nodes.size());
 
-    for (const auto& [id, node] : nodes) {
-      if (node.kernel_id != "__input__") {
+    for (auto& [id, node] : nodes) {
+      if (node.kernel_id != kInputKernelId) {
         const auto& def = registry->get(node.kernel_id);
         if (def.arity != node.inputs.size()) {
           throw std::runtime_error("Kernel arity mismatch for node: " + id);
@@ -361,7 +385,7 @@ class GraphBuilder {
         if (!bound) {
           throw std::runtime_error("Kernel binding returned empty function for node: " + id);
         }
-        nodes[id].kernel = std::move(bound);
+        node.kernel = std::move(bound);
       }
 
       indeg[id] = static_cast<int>(node.inputs.size());
@@ -402,9 +426,14 @@ class GraphBuilder {
       throw std::runtime_error("Graph has a cycle");
     }
 
+    std::unordered_set<std::string> seen_outputs;
+    seen_outputs.reserve(outputs_.size());
     for (const auto& out : outputs_) {
       if (nodes.find(out) == nodes.end()) {
         throw std::runtime_error("Unknown output node: " + out);
+      }
+      if (!seen_outputs.insert(out).second) {
+        throw std::runtime_error("Duplicate output node: " + out);
       }
     }
 

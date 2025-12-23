@@ -55,6 +55,26 @@ struct ConcurrencyProbe {
   }
 };
 
+std::shared_ptr<runlab::dataflow::KernelRegistry> MakePassthroughRegistry() {
+  using namespace runlab::dataflow;
+
+  auto registry = std::make_shared<KernelRegistry>();
+  registry->register_kernel(KernelDef{
+    .id = "id",
+    .arity = 1,
+    .bind =
+      [](const std::any&) -> KernelFn {
+      return [](std::vector<Value> inputs, const Resources&) -> AnyValueSender {
+        if (inputs.size() != 1) {
+          throw std::runtime_error("id expects 1 input");
+        }
+        return AnyValueSender(stdexec::just(std::move(inputs[0])));
+      };
+    },
+  });
+  return registry;
+}
+
 }  // namespace
 
 int main() {
@@ -392,6 +412,219 @@ int main() {
     const auto* z = std::get_if<float>(&it_z->second);
     if (!y || !z || std::fabs(*y - 3.0f) > 0.001f || std::fabs(*z - 3.0f) > 0.001f) {
       return Fail("dataflow fan-out bias incorrect");
+    }
+  }
+
+  {
+    using namespace runlab::dataflow;
+
+    auto registry = MakePassthroughRegistry();
+    GraphBuilder g;
+    g.add_input("x");
+    g.add_node("x", "id", std::any{}, {"x"});
+    g.set_outputs({"x"});
+
+    try {
+      (void)g.compile(registry);
+      return Fail("dataflow duplicate node id did not throw");
+    } catch (const std::exception&) {
+    }
+  }
+
+  {
+    using namespace runlab::dataflow;
+
+    auto registry = MakePassthroughRegistry();
+    GraphBuilder g;
+    g.add_node("y", "id", std::any{}, {"missing"});
+    g.set_outputs({"y"});
+
+    try {
+      (void)g.compile(registry);
+      return Fail("dataflow missing dependency did not throw");
+    } catch (const std::exception&) {
+    }
+  }
+
+  {
+    using namespace runlab::dataflow;
+
+    auto registry = MakePassthroughRegistry();
+    GraphBuilder g;
+    g.add_input("x");
+    g.add_node("y", "id", std::any{}, {"x", "x"});
+    g.set_outputs({"y"});
+
+    try {
+      (void)g.compile(registry);
+      return Fail("dataflow arity mismatch did not throw");
+    } catch (const std::exception&) {
+    }
+  }
+
+  {
+    using namespace runlab::dataflow;
+
+    auto registry = MakePassthroughRegistry();
+    GraphBuilder g;
+    g.add_input("x");
+    g.add_node("y", "id", std::any{}, {"x"});
+    g.set_outputs({"missing"});
+
+    try {
+      (void)g.compile(registry);
+      return Fail("dataflow unknown output did not throw");
+    } catch (const std::exception&) {
+    }
+  }
+
+  {
+    using namespace runlab::dataflow;
+
+    auto registry = MakePassthroughRegistry();
+    GraphBuilder g;
+    g.add_node("a", "id", std::any{}, {"b"});
+    g.add_node("b", "id", std::any{}, {"a"});
+    g.set_outputs({"a"});
+
+    try {
+      (void)g.compile(registry);
+      return Fail("dataflow cycle detection did not throw");
+    } catch (const std::exception&) {
+    }
+  }
+
+  {
+    using namespace runlab::dataflow;
+
+    auto registry = MakePassthroughRegistry();
+    GraphBuilder g;
+    g.add_input("x");
+    g.add_node("y", "id", std::any{}, {"x"});
+    g.set_outputs({"y", "y"});
+
+    try {
+      (void)g.compile(registry);
+      return Fail("dataflow duplicate outputs did not throw");
+    } catch (const std::exception&) {
+    }
+  }
+
+  {
+    using namespace runlab::dataflow;
+
+    auto registry = MakePassthroughRegistry();
+    GraphBuilder g;
+    g.add_input("x");
+
+    try {
+      (void)g.compile(registry);
+      return Fail("dataflow missing outputs did not throw");
+    } catch (const std::exception&) {
+    }
+  }
+
+  {
+    using namespace runlab::dataflow;
+
+    auto registry = MakePassthroughRegistry();
+    GraphBuilder g;
+    g.add_node("in", std::string(kInputKernelId), std::any{}, {"x"});
+    g.set_outputs({"in"});
+
+    try {
+      (void)g.compile(registry);
+      return Fail("dataflow input with deps did not throw");
+    } catch (const std::exception&) {
+    }
+  }
+
+  {
+    using namespace runlab::dataflow;
+
+    auto registry = MakePassthroughRegistry();
+    GraphBuilder g;
+    g.add_node("in", std::string(kInputKernelId), std::any{1}, {});
+    g.set_outputs({"in"});
+
+    try {
+      (void)g.compile(registry);
+      return Fail("dataflow input with config did not throw");
+    } catch (const std::exception&) {
+    }
+  }
+
+  {
+    using namespace runlab::dataflow;
+
+    auto registry = MakePassthroughRegistry();
+    GraphBuilder g;
+    g.add_node("y", "unknown_kernel", std::any{}, {});
+    g.set_outputs({"y"});
+
+    try {
+      (void)g.compile(registry);
+      return Fail("dataflow unknown kernel did not throw");
+    } catch (const std::exception&) {
+    }
+  }
+
+  {
+    using namespace runlab::dataflow;
+
+    auto registry = MakePassthroughRegistry();
+    GraphBuilder g;
+    g.add_node("y", "", std::any{}, {});
+    g.set_outputs({"y"});
+
+    try {
+      (void)g.compile(registry);
+      return Fail("dataflow empty kernel id did not throw");
+    } catch (const std::exception&) {
+    }
+  }
+
+  {
+    using namespace runlab::dataflow;
+
+    auto registry = std::make_shared<KernelRegistry>();
+    KernelDef def{
+      .id = "dup",
+      .arity = 0,
+      .bind =
+        [](const std::any&) -> KernelFn {
+        return [](std::vector<Value>, const Resources&) -> AnyValueSender {
+          return AnyValueSender(stdexec::just(Value{0.0f}));
+        };
+      },
+    };
+    registry->register_kernel(def);
+    try {
+      registry->register_kernel(def);
+      return Fail("dataflow duplicate kernel registration did not throw");
+    } catch (const std::exception&) {
+    }
+  }
+
+  {
+    using namespace runlab::dataflow;
+
+    auto registry = std::make_shared<KernelRegistry>();
+    KernelDef def{
+      .id = std::string(kInputKernelId),
+      .arity = 0,
+      .bind =
+        [](const std::any&) -> KernelFn {
+        return [](std::vector<Value>, const Resources&) -> AnyValueSender {
+          return AnyValueSender(stdexec::just(Value{0.0f}));
+        };
+      },
+    };
+
+    try {
+      registry->register_kernel(std::move(def));
+      return Fail("dataflow reserved kernel id registration did not throw");
+    } catch (const std::exception&) {
     }
   }
 

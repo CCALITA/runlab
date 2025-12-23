@@ -35,11 +35,8 @@ namespace kernels {
     // 静态工厂函数：返回一个复杂的模板类型 Sender
     template<DenseVector Data>
     auto compute_embedding(Data&& data) {
-        return stdexec::just(std::forward<Data>(data))
-             | stdexec::then([](auto&& span) {
-                 // SIMD 指令集优化区域
-                 return do_avx512_calc(span);
-             });
+        return do_avx512_calc(data);
+
     }
 }
 L2: 动态图运行时层 (Graph Runtime Layer)
@@ -49,30 +46,14 @@ L2: 动态图运行时层 (Graph Runtime Layer)
 
 Type Erasure (any_sender): 用于动态构图（尤其是 Python DSL）时的多态边界；L2 内部仍以 sender 组合方式编排。
 
-Stdexec-Native Dataflow (Value Channel): 新设计以 sender 的 value channel 传递数据：Node A 的输出值直接成为 Node B 的输入值；不依赖共享黑板作为数据通道。
+Stdexec-Native Dataflow (Value Channel): 新设计以 sender 的 value channel 传递数据：Node A 的输出值直接成为 Node B 的输入值；
 
-Kernel-Only Orchestration: DAG 节点被严格限制为 `kernel_id + config + input edges`；运行时负责组装/验证/调度，不接受任意业务 lambda 作为节点逻辑。
+Kernel-Only Orchestration: DAG 节点被严格限制为 `kernel_id + params + input`；运行时负责组装/验证/调度，不接受任意业务 lambda 作为节点逻辑。
 
 Resource via Env: Kernel 所需的 allocator/device/IO/logging 等资源通过 receiver environment 注入（monad-style），避免全局上下文与隐式依赖。
 
 Thread Pool Scheduling: 使用 stdexec::static_thread_pool 或自定义的 io_uring_context。
 
-关键数据结构（建议方向）:
-
-C++
-
-// 动态图：用 Value 表示运行时数据（按需求收敛类型集合，避免任意 std::any 扩散）
-using Value = /* e.g. std::variant<float, std::vector<float>, ...> */;
-using DynValueSender = /* any_sender<set_value(Value), set_error(exception_ptr), ...> */;
-
-struct NodeSpec {
-    std::string id;
-    std::string kernel_id;
-    /* decoded config */;
-    std::vector<std::string> inputs; // input edges (upstream node ids / ports)
-};
-
-// KernelRegistry 负责：kernel_id -> (config decode/validate) + invoke(...) -> sender
 L3: Python 绑定层 (Python DSL Layer)
 定位: 系统的“控制台”。暴露给最终用户，用于定义图的拓扑结构。
 
@@ -94,9 +75,9 @@ C++ 层将 Sender 擦除类型存入 L2 Node。
 
 Python 调用 engine.run() -> C++ 释放 GIL -> C++ 线程池狂奔 -> 结束获取 GIL -> 返回。
 
-3. 核心机制说明
+1. 核心机制说明
 3.1 数据流转：Value Channel (Stdexec Dataflow)
-Node A 的 sender 以 `set_value(out)` 完成；Node B 通过 `let_value(A, ...)` 获取 `out` 并继续构建 sender。中间结果不落地到共享黑板，仅在 sink 处收集为最终输出。
+Node A 的 sender 以 `set_value(out)` 完成；Node B 通过 `let_value(A, ...)` 获取 `out` 并继续构建 sender
 
 3.2 异常处理 (Error Propagation)
 stdexec 提供了专门的 set_error 通道。
@@ -107,7 +88,7 @@ L2: any_sender 捕获异常，传递给 stdexec::sync_wait 的接收器。
 
 L3: C++ 捕获 std::exception_ptr，转换为 Python 的 RuntimeError 并抛回给 Python 调用栈。
 
-4. 性能损耗分析 (Performance Analysis)
+1. 性能损耗分析 (Performance Analysis)
 在追求极致性能的场景下（如向量检索），我们需要明确开销在哪里：
 
 阶段 机制 开销评估 影响
