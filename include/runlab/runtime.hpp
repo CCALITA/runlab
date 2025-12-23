@@ -591,6 +591,48 @@ class Engine {
     graph(graph_name).add_node(std::move(id), std::move(deps), std::move(factory));
   }
 
+  template <typename Compute>
+  void add_value_node(std::string id, Compute compute) {
+    add_value_node_to("default", std::move(id), {}, std::move(compute));
+  }
+
+  template <typename Compute>
+  void add_value_node(std::string id,
+                      std::vector<std::string> deps,
+                      Compute compute) {
+    add_value_node_to("default", std::move(id), std::move(deps), std::move(compute));
+  }
+
+  template <typename Compute>
+  void add_value_node_to(const std::string& graph_name,
+                         std::string id,
+                         std::vector<std::string> deps,
+                         Compute compute) {
+    const auto key = id;
+    graph(graph_name).add_node(
+      std::move(id),
+      std::move(deps),
+      [key, compute = std::move(compute)](GraphContext& ctx) mutable {
+        return stdexec::then(stdexec::just(), [key, compute, &ctx]() mutable {
+          ctx.put(key, compute(ctx));
+        });
+      });
+  }
+
+  template <typename T>
+  void add_value_source(std::string id, T value) {
+    add_value_source_to("default", std::move(id), std::move(value));
+  }
+
+  template <typename T>
+  void add_value_source_to(const std::string& graph_name, std::string id, T value) {
+    add_value_node_to(
+      graph_name,
+      std::move(id),
+      {},
+      [value = std::move(value)](GraphContext&) mutable { return std::move(value); });
+  }
+
   void clear() {
     clear_graph("default");
   }

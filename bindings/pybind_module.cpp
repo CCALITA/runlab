@@ -8,8 +8,6 @@
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 
-#include <stdexec/execution.hpp>
-
 #include "runlab/kernels.hpp"
 #include "runlab/runtime.hpp"
 
@@ -123,79 +121,58 @@ PYBIND11_MODULE(runlab_py, m) {
               if (!params.contains("data")) {
                 throw std::runtime_error("input node requires data");
               }
-              auto data = std::make_shared<runlab::FloatSpan>(
-                  ToFloatSpanZeroCopy(params["data"]));
-              engine.add_node_to(
-                  graph_name, id, [id, data](runlab::GraphContext& ctx) {
-                    return stdexec::then(stdexec::just(), [id, data, &ctx]() {
-                      ctx.put(id, *data);
-                    });
-                  });
+              engine.add_value_source_to(
+                graph_name, id, ToFloatSpanZeroCopy(params["data"]));
               return;
             }
 
             if (op_type == "scale") {
               const std::string input = RequireString(params, "input");
               const float factor = RequireFloat(params, "factor");
-              engine.add_node_to(
-                  graph_name, id, {input},
-                  [id, input, factor](runlab::GraphContext& ctx) {
-                    const auto values = ctx.get_span(input);
-                    auto sender = stdexec::just(runlab::kernels::scale(values, factor));
-                    return stdexec::then(
-                      std::move(sender),
-                      [&ctx, id](std::vector<float> output) {
-                        ctx.put(id, std::move(output));
-                      });
-                  });
+              engine.add_value_node_to(
+                graph_name,
+                id,
+                {input},
+                [input, factor](runlab::GraphContext& ctx) {
+                  return runlab::kernels::scale(ctx.get_span(input), factor);
+                });
               return;
             }
 
             if (op_type == "add") {
               const std::string left = RequireString(params, "left");
               const std::string right = RequireString(params, "right");
-              engine.add_node_to(
-                  graph_name, id, {left, right},
-                  [id, left, right](runlab::GraphContext& ctx) {
-                    const auto a = ctx.get_span(left);
-                    const auto b = ctx.get_span(right);
-                    auto sender = stdexec::just(runlab::kernels::add(a, b));
-                    return stdexec::then(
-                      std::move(sender),
-                      [&ctx, id](std::vector<float> output) {
-                        ctx.put(id, std::move(output));
-                      });
-                  });
+              engine.add_value_node_to(
+                graph_name,
+                id,
+                {left, right},
+                [left, right](runlab::GraphContext& ctx) {
+                  return runlab::kernels::add(ctx.get_span(left), ctx.get_span(right));
+                });
               return;
             }
 
             if (op_type == "sum") {
               const std::string input = RequireString(params, "input");
-              engine.add_node_to(
-                  graph_name, id, {input},
-                  [id, input](runlab::GraphContext& ctx) {
-                    const auto values = ctx.get_span(input);
-                    auto sender = stdexec::just(runlab::kernels::sum(values));
-                    return stdexec::then(
-                      std::move(sender),
-                      [&ctx, id](float total) { ctx.put(id, total); });
-                  });
+              engine.add_value_node_to(
+                graph_name,
+                id,
+                {input},
+                [input](runlab::GraphContext& ctx) {
+                  return runlab::kernels::sum(ctx.get_span(input));
+                });
               return;
             }
 
             if (op_type == "embedding") {
               const std::string input = RequireString(params, "input");
-              engine.add_node_to(
-                  graph_name, id, {input},
-                  [id, input](runlab::GraphContext& ctx) {
-                    const auto values = ctx.get_span(input);
-                    auto sender = stdexec::just(runlab::kernels::compute_embedding(values));
-                    return stdexec::then(
-                      std::move(sender),
-                      [&ctx, id](std::vector<float> output) {
-                        ctx.put(id, std::move(output));
-                      });
-                  });
+              engine.add_value_node_to(
+                graph_name,
+                id,
+                {input},
+                [input](runlab::GraphContext& ctx) {
+                  return runlab::kernels::compute_embedding(ctx.get_span(input));
+                });
               return;
             }
 
