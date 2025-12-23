@@ -260,9 +260,7 @@ int main() {
       .id = "add_f",
       .arity = 2,
       .invoke =
-        [](const std::any&,
-           std::vector<Value> inputs,
-           const Resources&) -> AnyValueSender {
+        [](const std::any&, std::vector<Value> inputs, const Resources&) -> AnyValueSender {
           if (inputs.size() != 2) {
             throw std::runtime_error("add_f expects 2 inputs");
           }
@@ -306,9 +304,8 @@ int main() {
       .id = "add_bias",
       .arity = 1,
       .invoke =
-        [](const std::any&,
-           std::vector<Value> inputs,
-           const Resources& resources) -> AnyValueSender {
+        [](const std::any&, std::vector<Value> inputs, const Resources& resources)
+        -> AnyValueSender {
           if (inputs.size() != 1) {
             throw std::runtime_error("add_bias expects 1 input");
           }
@@ -342,6 +339,55 @@ int main() {
     const auto* y = std::get_if<float>(&it->second);
     if (!y || std::fabs(*y - 12.0f) > 0.001f) {
       return Fail("dataflow add_bias output unexpected");
+    }
+  }
+
+  {
+    using namespace runlab::dataflow;
+
+    auto registry = std::make_shared<KernelRegistry>();
+    registry->register_kernel(KernelDef{
+      .id = "add_bias",
+      .arity = 1,
+      .invoke =
+        [](const std::any&, std::vector<Value> inputs, const Resources& resources)
+        -> AnyValueSender {
+          if (inputs.size() != 1) {
+            throw std::runtime_error("add_bias expects 1 input");
+          }
+          const auto* x = std::get_if<float>(&inputs[0]);
+          if (!x) {
+            throw std::runtime_error("add_bias expects float input");
+          }
+          return AnyValueSender(stdexec::just(Value{*x + resources.bias}));
+        },
+    });
+
+    GraphBuilder g;
+    g.add_input("x");
+    g.add_node("y", "add_bias", std::any{}, {"x"});
+    g.add_node("z", "add_bias", std::any{}, {"x"});
+    g.set_outputs({"y", "z"});
+
+    auto compiled = g.compile(registry);
+    auto snd = stdexec::write_env(
+      compiled.sender(InputMap{{"x", Value{5.0f}}}),
+      exec::with(get_resources, Resources{.bias = -2.0f}));
+
+    auto out_opt = stdexec::sync_wait(std::move(snd));
+    if (!out_opt) {
+      return Fail("dataflow fan-out add_bias was stopped");
+    }
+    const auto out = std::get<0>(*out_opt);
+    const auto it_y = out.find("y");
+    const auto it_z = out.find("z");
+    if (it_y == out.end() || it_z == out.end()) {
+      return Fail("dataflow fan-out outputs missing");
+    }
+    const auto* y = std::get_if<float>(&it_y->second);
+    const auto* z = std::get_if<float>(&it_z->second);
+    if (!y || !z || std::fabs(*y - 3.0f) > 0.001f || std::fabs(*z - 3.0f) > 0.001f) {
+      return Fail("dataflow fan-out bias incorrect");
     }
   }
 

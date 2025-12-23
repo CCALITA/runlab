@@ -31,6 +31,9 @@ Goals:
 - Build DAGs at runtime, but run as pure stdexec dataflow (no shared blackboard for data).
 - Restrict orchestration to `kernel_id + config + input edges`; kernel is the compute unit.
 - Manage resources monad-style via receiver env (no explicit “context” object).
+- Snapshot `Resources` from the receiver env at graph entry; pass into kernels while we
+  figure out an env-preserving type erasure strategy.
+- Added dataflow tests covering bias injection and fan-out with resource usage.
 
 Proposed public surface (C++):
 ```cpp

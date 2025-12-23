@@ -63,8 +63,7 @@ class SharedVoidSender {
   using sender_concept = stdexec::sender_t;
   using completion_signatures = VoidSignatures;
 
-  SharedVoidSender()
-      : factory_([]() { return AnyVoidSender(stdexec::just()); }) {}
+  SharedVoidSender() : factory_([]() { return AnyVoidSender(stdexec::just()); }) {}
 
   template <typename Sender>
   explicit SharedVoidSender(Sender sender) {
@@ -96,8 +95,7 @@ class SharedValueSender {
   using sender_concept = stdexec::sender_t;
   using completion_signatures = ValueSignatures;
 
-  SharedValueSender()
-      : factory_([]() { return AnyValueSender(stdexec::just(Value{0.0f})); }) {}
+  SharedValueSender() : factory_([]() { return AnyValueSender(stdexec::just(Value{0.0f})); }) {}
 
   template <typename Sender>
   explicit SharedValueSender(Sender sender) {
@@ -207,9 +205,7 @@ class CompiledGraph {
 
   template <class Scheduler>
     requires stdexec::scheduler<Scheduler>
-  AnyOutputSender build_sender(InputMap inputs,
-                               Scheduler sched,
-                               Resources resources) const {
+  AnyOutputSender build_sender(InputMap inputs, Scheduler sched, Resources resources) const {
     auto inputs_ptr = std::make_shared<InputMap>(std::move(inputs));
     auto resources_ptr = std::make_shared<Resources>(std::move(resources));
 
@@ -222,11 +218,11 @@ class CompiledGraph {
       if (node.kernel_id == "__input__") {
         auto s = stdexec::then(stdexec::just(), [inputs_ptr, id]() -> Value {
           auto it = inputs_ptr->find(id);
-          if (it == inputs_ptr->end()) {
-            throw std::runtime_error("Missing graph input: " + id);
-          }
-          return it->second;
-        });
+        if (it == inputs_ptr->end()) {
+          throw std::runtime_error("Missing graph input: " + id);
+        }
+        return it->second;
+      });
         auto started = stdexec::starts_on(sched, std::move(s));
         tasks.emplace(id, SharedValueSender(stdexec::split(std::move(started))));
         continue;
