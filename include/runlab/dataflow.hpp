@@ -63,7 +63,12 @@ class SharedVoidSender {
   using sender_concept = stdexec::sender_t;
   using completion_signatures = VoidSignatures;
 
-  SharedVoidSender() : factory_([]() { return AnyVoidSender(stdexec::just()); }) {}
+  SharedVoidSender()
+      : factory_([]() {
+          auto seeded =
+            stdexec::write_env(stdexec::just(), exec::with(get_resources, Resources{}));
+          return AnyVoidSender(std::move(seeded));
+        }) {}
 
   template <typename Sender>
   explicit SharedVoidSender(Sender sender) {
@@ -95,7 +100,12 @@ class SharedValueSender {
   using sender_concept = stdexec::sender_t;
   using completion_signatures = ValueSignatures;
 
-  SharedValueSender() : factory_([]() { return AnyValueSender(stdexec::just(Value{0.0f})); }) {}
+  SharedValueSender()
+      : factory_([]() {
+          auto seeded = stdexec::write_env(
+            stdexec::just(Value{0.0f}), exec::with(get_resources, Resources{}));
+          return AnyValueSender(std::move(seeded));
+        }) {}
 
   template <typename Sender>
   explicit SharedValueSender(Sender sender) {
@@ -122,9 +132,11 @@ class SharedValueSender {
   std::function<AnyValueSender()> factory_;
 };
 
-inline SharedVoidSender CombineAll(std::vector<SharedVoidSender> tasks) {
+inline SharedVoidSender CombineAll(std::vector<SharedVoidSender> tasks,
+                                   const Resources& resources) {
+  auto seed = exec::with(get_resources, resources);
   if (tasks.empty()) {
-    return SharedVoidSender(stdexec::just());
+    return SharedVoidSender(stdexec::write_env(stdexec::just(), seed));
   }
 
   SharedVoidSender combined = std::move(tasks.front());
@@ -132,7 +144,8 @@ inline SharedVoidSender CombineAll(std::vector<SharedVoidSender> tasks) {
     auto joined =
       stdexec::when_all(std::move(combined), std::move(tasks[i]));
     auto flattened = stdexec::then(std::move(joined), [](auto&&...) {});
-    combined = SharedVoidSender(std::move(flattened));
+    auto seeded = stdexec::write_env(std::move(flattened), seed);
+    combined = SharedVoidSender(std::move(seeded));
   }
   return combined;
 }
@@ -218,12 +231,13 @@ class CompiledGraph {
       if (node.kernel_id == "__input__") {
         auto s = stdexec::then(stdexec::just(), [inputs_ptr, id]() -> Value {
           auto it = inputs_ptr->find(id);
-        if (it == inputs_ptr->end()) {
-          throw std::runtime_error("Missing graph input: " + id);
-        }
-        return it->second;
-      });
-        auto started = stdexec::starts_on(sched, std::move(s));
+          if (it == inputs_ptr->end()) {
+            throw std::runtime_error("Missing graph input: " + id);
+          }
+          return it->second;
+        });
+        auto seeded = stdexec::write_env(std::move(s), exec::with(get_resources, *resources_ptr));
+        auto started = stdexec::starts_on(sched, std::move(seeded));
         tasks.emplace(id, SharedValueSender(stdexec::split(std::move(started))));
         continue;
       }
@@ -246,16 +260,20 @@ class CompiledGraph {
           stdexec::then(dep_it->second, [values, i](Value v) {
             (*values)[i] = std::move(v);
           });
-        dep_writes.emplace_back(SharedVoidSender(stdexec::split(std::move(write))));
+        auto seeded =
+          stdexec::write_env(std::move(write), exec::with(get_resources, *resources_ptr));
+        dep_writes.emplace_back(SharedVoidSender(stdexec::split(std::move(seeded))));
       }
 
-      auto deps_barrier = CombineAll(std::move(dep_writes));
+      auto deps_barrier = CombineAll(std::move(dep_writes), *resources_ptr);
       auto node_sender = stdexec::let_value(
         std::move(deps_barrier),
         [kernel, config = node.config, values, resources_ptr]() mutable {
           return kernel.invoke(config, std::move(*values), *resources_ptr);
         });
-      auto started = stdexec::starts_on(sched, std::move(node_sender));
+      auto seeded =
+        stdexec::write_env(std::move(node_sender), exec::with(get_resources, *resources_ptr));
+      auto started = stdexec::starts_on(sched, std::move(seeded));
       tasks.emplace(id, SharedValueSender(stdexec::split(std::move(started))));
     }
 
@@ -271,10 +289,12 @@ class CompiledGraph {
       }
       auto write =
         stdexec::then(it->second, [outputs, id](Value v) { (*outputs)[id] = std::move(v); });
-      write_out.emplace_back(SharedVoidSender(stdexec::split(std::move(write))));
+      auto seeded =
+        stdexec::write_env(std::move(write), exec::with(get_resources, *resources_ptr));
+      write_out.emplace_back(SharedVoidSender(stdexec::split(std::move(seeded))));
     }
 
-    auto out_barrier = CombineAll(std::move(write_out));
+    auto out_barrier = CombineAll(std::move(write_out), *resources_ptr);
     auto out_sender =
       stdexec::then(std::move(out_barrier), [outputs]() mutable { return std::move(*outputs); });
 
