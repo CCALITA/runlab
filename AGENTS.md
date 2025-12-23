@@ -5,14 +5,14 @@ code rule
 - sender receiver P2300 model 
 
 ## Project Structure & Module Map
-- `include/runlab/`: C++20 headers. `runtime.hpp` hosts the thread-pool DAG engine; `dataflow.hpp` is the stdexec-native runtime (pure value channels, kernel registry binding). `kernels.hpp` holds sample sender-based kernels; `sender.hpp` has helper adapters.
-- `bindings/pybind_module.cpp`: pybind11 layer that wraps the runtime; keep the C++ surface small and sender-native.
+- `include/runlab/`: C++20 headers. `runtime.hpp` hosts the thread-pool DAG engine; `dataflow.hpp` is the stdexec-native runtime (pure value channels, kernel registry binding). `kernels.hpp` holds sample implementation of basic computation unit; `sender.hpp` has helper adapters.
+- `bindings/pybind_module.cpp`: pybind11 DSL layer base on the cpp runtime.
 - `tests/`: C++ test executables (see `tests/test_runtime.cpp` for end-to-end DAG checks).
 - `examples/`: quick usage samples (Python and C++).
 - `thirdparty/stdexec/`: vendored stdexec. Treat as upstream-only.
 
 ## Runtime & API Expectations
-- Kernels are pure sender factories: shape `KernelFn(std::vector<Value>, const Resources&) -> AnyValueSender`. No shared `context` mutation inside kernels.
+- Kernels are pure operator that can be register and instantiation by `kernel_id`  at runtime
 - Graph orchestration is restricted to `kernel_id + config + inputs`; `GraphBuilder::compile` binds `KernelDef::bind(config)` once and runs a single concrete sender type per node. Inject DSL/config at the binding layer, not inside kernels.
 - Resources (e.g., bias/allocators) flow through the receiver env. Attach with `stdexec::write_env(sender, exec::with(get_resources, ...))`; the runtime snapshots once per graph.
 - Multiple DAGs can be installed and run independently; keep graph IDs unique and contexts isolated.
