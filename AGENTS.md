@@ -1,4 +1,8 @@
 # Repository Guidelines
+code rule
+- c++20 modern program
+- FP monad style
+- sender receiver P2300 model 
 
 ## Project Structure & Module Map
 - `include/runlab/`: C++20 headers. `runtime.hpp` hosts the thread-pool DAG engine; `dataflow.hpp` is the stdexec-native runtime (pure value channels, kernel registry binding). `kernels.hpp` holds sample sender-based kernels; `sender.hpp` has helper adapters.
@@ -25,7 +29,7 @@
 - Prefer stdexec-native composition; avoid new type erasure layers unless aligned with `exec::any_sender`.
 
 ## Testing Guidelines
-- Keep tests minimal and direct (non-framework). Mirror patterns in `tests/test_runtime.cpp`: deterministic inputs, explicit failure messages, non-zero exit on failure.
+- Keep tests direct (non-framework). Mirror patterns in `tests/test_runtime.cpp`: deterministic inputs, explicit failure messages, non-zero exit on failure.
 - When adding kernels, cover both success and error propagation; verify fan-out/fan-in if applicable.
 
 ## Commit & PR Guidelines

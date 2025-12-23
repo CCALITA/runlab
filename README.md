@@ -1,7 +1,7 @@
 # Runlab Hybrid DAG (Minimal Reference)
 
-This is a minimal C++20 + pybind11 implementation of the hybrid static/dynamic DAG
-engine described in `read.md`. It focuses on the three-layer split:
+This is a  C++20 + pybind11 implementation of the hybrid static/dynamic DAG
+engine described in `target.md`. It focuses on the three-layer split:
 
 - L1: static sender-based kernels in `include/runlab/kernels.hpp`
 - L2: dynamic graph runtime, type-erased tasks, and a blackboard in
