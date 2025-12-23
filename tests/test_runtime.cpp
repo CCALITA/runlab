@@ -67,14 +67,14 @@ int main() {
     });
     engine.add_node("scaled", {"input"}, [](runlab::GraphContext& ctx) {
       auto values = ctx.get<std::vector<float>>("input");
-      auto sender = runlab::kernels::scale(std::move(values), 2.0f);
+      auto sender = stdexec::just(runlab::kernels::scale(std::move(values), 2.0f));
       return stdexec::then(std::move(sender), [&ctx](std::vector<float> output) {
         ctx.put("scaled", std::move(output));
       });
     });
     engine.add_node("total", {"scaled"}, [](runlab::GraphContext& ctx) {
       auto values = ctx.get<std::vector<float>>("scaled");
-      auto sender = runlab::kernels::sum(std::move(values));
+      auto sender = stdexec::just(runlab::kernels::sum(std::move(values)));
       return stdexec::then(std::move(sender), [&ctx](float total) { ctx.put("total", total); });
     });
 

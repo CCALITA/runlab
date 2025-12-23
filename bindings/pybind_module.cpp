@@ -141,7 +141,7 @@ PYBIND11_MODULE(runlab_py, m) {
                   graph_name, id, {input},
                   [id, input, factor](runlab::GraphContext& ctx) {
                     const auto values = ctx.get_span(input);
-                    auto sender = runlab::kernels::scale(values, factor);
+                    auto sender = stdexec::just(runlab::kernels::scale(values, factor));
                     return stdexec::then(
                       std::move(sender),
                       [&ctx, id](std::vector<float> output) {
@@ -159,7 +159,7 @@ PYBIND11_MODULE(runlab_py, m) {
                   [id, left, right](runlab::GraphContext& ctx) {
                     const auto a = ctx.get_span(left);
                     const auto b = ctx.get_span(right);
-                    auto sender = runlab::kernels::add(a, b);
+                    auto sender = stdexec::just(runlab::kernels::add(a, b));
                     return stdexec::then(
                       std::move(sender),
                       [&ctx, id](std::vector<float> output) {
@@ -175,7 +175,7 @@ PYBIND11_MODULE(runlab_py, m) {
                   graph_name, id, {input},
                   [id, input](runlab::GraphContext& ctx) {
                     const auto values = ctx.get_span(input);
-                    auto sender = runlab::kernels::sum(values);
+                    auto sender = stdexec::just(runlab::kernels::sum(values));
                     return stdexec::then(
                       std::move(sender),
                       [&ctx, id](float total) { ctx.put(id, total); });
@@ -189,7 +189,7 @@ PYBIND11_MODULE(runlab_py, m) {
                   graph_name, id, {input},
                   [id, input](runlab::GraphContext& ctx) {
                     const auto values = ctx.get_span(input);
-                    auto sender = runlab::kernels::compute_embedding(values);
+                    auto sender = stdexec::just(runlab::kernels::compute_embedding(values));
                     return stdexec::then(
                       std::move(sender),
                       [&ctx, id](std::vector<float> output) {
