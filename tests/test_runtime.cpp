@@ -6,13 +6,14 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <vector>
 
 #include <stdexec/execution.hpp>
 
-#include "runlab/dataflow.hpp"
-#include "runlab/kernels.hpp"
-#include "runlab/runtime.hpp"
+#include "runlab/runtime/dataflow.hpp"
+#include "runlab/kernel/kernels.hpp"
+#include "runlab/engine/engine.hpp"
 
 namespace {
 
@@ -59,17 +60,17 @@ std::shared_ptr<runlab::dataflow::KernelRegistry> MakePassthroughRegistry() {
   using namespace runlab::dataflow;
 
   auto registry = std::make_shared<KernelRegistry>();
-  registry->register_kernel(KernelDef{
-    .id = "id",
-    .arity = 1,
-    .bind =
-      [](const std::any&) -> KernelFn {
-      return [](std::vector<Value> inputs, const Resources&) -> AnyValueSender {
-        if (inputs.size() != 1) {
-          throw std::runtime_error("id expects 1 input");
-        }
-        return AnyValueSender(stdexec::just(std::move(inputs[0])));
-      };
+    registry->register_kernel(KernelDef{
+      .id = "id",
+      .arity = 1,
+      .bind =
+        [](const std::any&) -> KernelFn {
+        return [](std::vector<Value> inputs, const RuntimeConfig*) -> AnyValueSender {
+          if (inputs.size() != 1) {
+            throw std::runtime_error("id expects 1 input");
+          }
+          return AnyValueSender(stdexec::just(std::move(inputs[0])));
+        };
     },
   });
   return registry;
@@ -281,7 +282,7 @@ int main() {
       .arity = 2,
       .bind =
         [](const std::any&) -> KernelFn {
-        return [](std::vector<Value> inputs, const Resources&) -> AnyValueSender {
+        return [](std::vector<Value> inputs, const RuntimeConfig*) -> AnyValueSender {
           if (inputs.size() != 2) {
             throw std::runtime_error("add_f expects 2 inputs");
           }
@@ -326,8 +327,9 @@ int main() {
       .id = "add_bias",
       .arity = 1,
       .bind =
-        [](const std::any&) -> KernelFn {
-        return [](std::vector<Value> inputs, const Resources& resources) -> AnyValueSender {
+        [](const std::any& cfg) -> KernelFn {
+        const float bias = std::any_cast<float>(cfg);
+        return [bias](std::vector<Value> inputs, const RuntimeConfig*) -> AnyValueSender {
           if (inputs.size() != 1) {
             throw std::runtime_error("add_bias expects 1 input");
           }
@@ -335,20 +337,18 @@ int main() {
           if (!x) {
             throw std::runtime_error("add_bias expects float input");
           }
-          return AnyValueSender(stdexec::just(Value{*x + resources.bias}));
+          return AnyValueSender(stdexec::just(Value{*x + bias}));
         };
       },
     });
 
     GraphBuilder g;
     g.add_input("x");
-    g.add_node("y", "add_bias", std::any{}, {"x"});
+    g.add_node("y", "add_bias", std::any{2.0f}, {"x"});
     g.set_outputs({"y"});
     auto compiled = g.compile(registry);
 
-    auto snd = stdexec::write_env(
-      compiled.sender(InputMap{{"x", Value{10.0f}}}),
-      exec::with(get_resources, Resources{.bias = 2.0f}));
+    auto snd = compiled.sender(InputMap{{"x", Value{10.0f}}});
 
     auto out_opt = stdexec::sync_wait(std::move(snd));
     if (!out_opt) {
@@ -373,8 +373,9 @@ int main() {
       .id = "add_bias",
       .arity = 1,
       .bind =
-        [](const std::any&) -> KernelFn {
-        return [](std::vector<Value> inputs, const Resources& resources) -> AnyValueSender {
+        [](const std::any& cfg) -> KernelFn {
+        const float bias = std::any_cast<float>(cfg);
+        return [bias](std::vector<Value> inputs, const RuntimeConfig*) -> AnyValueSender {
           if (inputs.size() != 1) {
             throw std::runtime_error("add_bias expects 1 input");
           }
@@ -382,21 +383,19 @@ int main() {
           if (!x) {
             throw std::runtime_error("add_bias expects float input");
           }
-          return AnyValueSender(stdexec::just(Value{*x + resources.bias}));
+          return AnyValueSender(stdexec::just(Value{*x + bias}));
         };
       },
     });
 
     GraphBuilder g;
     g.add_input("x");
-    g.add_node("y", "add_bias", std::any{}, {"x"});
-    g.add_node("z", "add_bias", std::any{}, {"x"});
+    g.add_node("y", "add_bias", std::any{-2.0f}, {"x"});
+    g.add_node("z", "add_bias", std::any{-2.0f}, {"x"});
     g.set_outputs({"y", "z"});
 
     auto compiled = g.compile(registry);
-    auto snd = stdexec::write_env(
-      compiled.sender(InputMap{{"x", Value{5.0f}}}),
-      exec::with(get_resources, Resources{.bias = -2.0f}));
+    auto snd = compiled.sender(InputMap{{"x", Value{5.0f}}});
 
     auto out_opt = stdexec::sync_wait(std::move(snd));
     if (!out_opt) {
@@ -593,7 +592,7 @@ int main() {
       .arity = 0,
       .bind =
         [](const std::any&) -> KernelFn {
-        return [](std::vector<Value>, const Resources&) -> AnyValueSender {
+        return [](std::vector<Value>, const RuntimeConfig*) -> AnyValueSender {
           return AnyValueSender(stdexec::just(Value{0.0f}));
         };
       },
@@ -615,7 +614,7 @@ int main() {
       .arity = 0,
       .bind =
         [](const std::any&) -> KernelFn {
-        return [](std::vector<Value>, const Resources&) -> AnyValueSender {
+        return [](std::vector<Value>, const RuntimeConfig*) -> AnyValueSender {
           return AnyValueSender(stdexec::just(Value{0.0f}));
         };
       },
@@ -624,6 +623,220 @@ int main() {
     try {
       registry->register_kernel(std::move(def));
       return Fail("dataflow reserved kernel id registration did not throw");
+    } catch (const std::exception&) {
+    }
+  }
+
+  {
+    using namespace runlab::dataflow;
+
+    auto registry = MakePassthroughRegistry();
+    GraphBuilder g;
+    g.add_input("x");
+    g.add_node("y", "id", std::any{}, {"x"});
+    g.set_outputs({"y"});
+    auto compiled = g.compile(registry);
+
+    try {
+      (void)stdexec::sync_wait(compiled.sender(InputMap{}));
+      return Fail("dataflow missing runtime input did not throw");
+    } catch (const std::exception&) {
+    }
+  }
+
+  {
+    using namespace runlab::dataflow;
+
+    auto registry = MakePassthroughRegistry();
+    GraphBuilder g;
+    g.add_input("x");
+    g.add_node("y", "id", std::any{}, {"x"});
+    g.set_outputs({"y"});
+    auto compiled = g.compile(registry);
+
+    try {
+      (void)stdexec::sync_wait(
+        compiled.sender(InputMap{{"x", Value{1.0f}}, {"extra", Value{2.0f}}}));
+      return Fail("dataflow unknown runtime input did not throw");
+    } catch (const std::exception&) {
+    }
+  }
+
+  {
+    using namespace runlab::dataflow;
+
+    auto registry = std::make_shared<KernelRegistry>();
+    registry->register_kernel(KernelDef{
+      .id = "needs_float",
+      .arity = 0,
+      .validate_config =
+        [](const std::any& cfg) { (void)RequireConfig<float>(cfg, "needs_float", "float config"); },
+      .bind =
+        [](const std::any& cfg) -> KernelFn {
+        const float value = RequireConfig<float>(cfg, "needs_float", "float config");
+        return [value](std::vector<Value>, const RuntimeConfig*) -> AnyValueSender {
+          return AnyValueSender(stdexec::just(Value{value}));
+        };
+      },
+    });
+
+    GraphBuilder g;
+    g.add_node("y", "needs_float", std::any{std::string("bad")}, {});
+    g.set_outputs({"y"});
+
+    try {
+      (void)g.compile(registry);
+      return Fail("dataflow config validation did not throw");
+    } catch (const std::exception&) {
+    }
+  }
+
+  {
+    using namespace runlab::dataflow;
+
+    auto registry = std::make_shared<KernelRegistry>();
+    registry->register_kernel(KernelDef{
+      .id = "needs_float",
+      .arity = 0,
+      .validate_config =
+        [](const std::any& cfg) { (void)RequireConfig<float>(cfg, "needs_float", "float config"); },
+      .bind =
+        [](const std::any& cfg) -> KernelFn {
+        const float value = RequireConfig<float>(cfg, "needs_float", "float config");
+        return [value](std::vector<Value>, const RuntimeConfig*) -> AnyValueSender {
+          return AnyValueSender(stdexec::just(Value{value}));
+        };
+      },
+    });
+
+    GraphBuilder g;
+    g.add_node("y", "needs_float", std::any{2.5f}, {});
+    g.set_outputs({"y"});
+    auto compiled = g.compile(registry);
+    auto out_opt = stdexec::sync_wait(compiled.sender(InputMap{}));
+    if (!out_opt) {
+      return Fail("dataflow config validation success path stopped");
+    }
+    const auto out = std::get<0>(*out_opt);
+    const auto it = out.find("y");
+    if (it == out.end()) {
+      return Fail("dataflow config validation success output missing");
+    }
+    const auto* val = std::get_if<float>(&it->second);
+    if (!val || std::fabs(*val - 2.5f) > 0.001f) {
+      return Fail("dataflow config validation success output unexpected");
+    }
+  }
+
+  {
+    using namespace runlab::dataflow;
+
+    try {
+      (void)RequireConfig<int>(std::any{std::string("bad")}, "cfg_helper", "int config");
+      return Fail("RequireConfig accepted wrong type");
+    } catch (const std::exception& e) {
+      const std::string msg = e.what();
+      if (msg.find("cfg_helper") == std::string::npos ||
+          msg.find("int config") == std::string::npos) {
+        return Fail("RequireConfig error message missing context");
+      }
+    }
+  }
+
+  {
+    using namespace runlab::dataflow;
+
+    auto registry = std::make_shared<KernelRegistry>();
+    RegisterDefaultKernels(registry);
+
+    registry->register_kernel(MakeKernel<1>(
+      "add_bias_env",
+      [](std::monostate) -> KernelFn {
+        return [](std::vector<Value> inputs, const RuntimeConfig* rcfg) -> AnyValueSender {
+          if (inputs.size() != 1) {
+            throw std::runtime_error("add_bias_env expects 1 input");
+          }
+          const auto* x = std::get_if<float>(&inputs[0]);
+          if (!x) {
+            throw std::runtime_error("add_bias_env expects float input");
+          }
+          if (!rcfg) {
+            throw std::runtime_error("add_bias_env missing runtime config");
+          }
+          return AnyValueSender(stdexec::just(Value{*x + rcfg->bias}));
+        };
+      }));
+
+    RuntimeConfig cfg{.bias = 3.0f};
+
+    GraphBuilder g;
+    g.add_input("x");
+    g.add_node("y", "add_bias_env", std::any{}, {"x"});
+    g.set_outputs({"y"});
+    auto compiled = g.compile(registry);
+
+    auto snd = stdexec::write_env(
+      compiled.sender(InputMap{{"x", Value{2.0f}}}),
+      exec::with(get_runtime_config, &cfg));
+
+    auto out_opt = stdexec::sync_wait(std::move(snd));
+    if (!out_opt) {
+      return Fail("dataflow add_bias_env was stopped");
+    }
+    const auto out = std::get<0>(*out_opt);
+    const auto it = out.find("y");
+    if (it == out.end()) {
+      return Fail("dataflow add_bias_env output missing");
+    }
+    const auto* y = std::get_if<float>(&it->second);
+    if (!y || std::fabs(*y - 5.0f) > 0.001f) {
+      return Fail("dataflow add_bias_env output unexpected");
+    }
+  }
+
+  {
+    using namespace runlab::dataflow;
+
+    auto registry = std::make_shared<KernelRegistry>();
+    RegisterDefaultKernels(registry);
+
+    GraphBuilder g;
+    g.add_input("x");
+    g.add_input("y");
+    g.add_node("scaled", "scale_f", std::any{2.0f}, {"x"});
+    g.add_node("sum", "add_f", std::any{}, {"scaled", "y"});
+    g.set_outputs({"sum"});
+
+    auto compiled = g.compile(registry);
+    auto out_opt =
+      stdexec::sync_wait(compiled.sender(InputMap{{"x", Value{1.5f}}, {"y", Value{4.0f}}}));
+    if (!out_opt) {
+      return Fail("dataflow default kernels were stopped");
+    }
+    const auto out = std::get<0>(*out_opt);
+    const auto it = out.find("sum");
+    if (it == out.end()) {
+      return Fail("dataflow default kernels missing output");
+    }
+    const auto* sum = std::get_if<float>(&it->second);
+    if (!sum || std::fabs(*sum - 7.0f) > 0.001f) {
+      return Fail("dataflow default kernels produced wrong sum");
+    }
+  }
+
+  {
+    using namespace runlab::dataflow;
+
+    auto registry = std::make_shared<KernelRegistry>();
+    RegisterDefaultKernels(registry);
+    GraphBuilder g;
+    g.add_input("x");
+    g.add_node("scaled", "scale_f", std::any{std::string("bad")}, {"x"});
+    g.set_outputs({"scaled"});
+
+    try {
+      (void)g.compile(registry);
+      return Fail("dataflow default kernel config validation did not throw");
     } catch (const std::exception&) {
     }
   }

@@ -3,10 +3,12 @@
 This is a  C++20 + pybind11 implementation of the hybrid static/dynamic DAG
 engine described in `target.md`. It focuses on the three-layer split:
 
-- L1: static sender-based kernels in `include/runlab/kernels.hpp`
+- L1: static sender-based kernels in `include/runlab/kernel/kernels.hpp`
 - L2: dynamic graph runtime, type-erased tasks, and a blackboard in
-  `include/runlab/runtime.hpp`
+  `include/runlab/engine/engine.hpp`
 - L3: Python DSL bindings in `bindings/pybind_module.cpp`
+- Vendored reflection helpers in `include/runlab/reflection/` (nlohmann/json, entt meta,
+  magic_enum headers)
 
 ## Build
 
@@ -96,23 +98,35 @@ stdexec::sync_wait(std::move(snd));
 
 ## Direction: stdexec-native dataflow runtime (WIP)
 
-The current runtime (`include/runlab/runtime.hpp`) supports orchestration via a
+The current runtime (`include/runlab/engine/engine.hpp`) supports orchestration via a
 shared blackboard. The next iteration removes shared data contexts and models the
 DAG as pure stdexec dataflow:
 
 - Data moves as sender values along edges (no `GraphContext` for data transport).
 - Nodes are restricted to `kernel_id + config + input edges` (no per-node lambdas).
-- Kernels acquire resources via the receiver environment (allocator/device/etc.).
 - Running a graph returns a sender; `sync_wait` is optional at the boundary.
 
-Resource injection example (see `include/runlab/dataflow.hpp`):
+Config validation helper + templated kernel builder (dataflow):
 
 ```cpp
 using namespace runlab::dataflow;
 
-auto snd = stdexec::write_env(
-  compiled.sender(InputMap{{"x", Value{10.0f}}}),
-  exec::with(get_resources, Resources{.bias = 2.0f}));
+auto registry = std::make_shared<KernelRegistry>();
+RegisterDefaultKernels(registry);  // installs "id", "add_f", "scale_f"
 
-auto out = std::get<0>(*stdexec::sync_wait(std::move(snd)));
+registry->register_kernel(MakeKernel<1, float>(
+  "scale",
+  [](float factor) -> KernelFn {
+    if (factor <= 0.f) {
+      throw std::runtime_error("scale config invalid: factor must be > 0");
+    }
+    return [factor](std::vector<Value> inputs) -> AnyValueSender {
+      const auto* x = std::get_if<float>(&inputs.at(0));
+      if (!x) {
+        throw std::runtime_error("scale expects float input");
+      }
+      return AnyValueSender(stdexec::just(Value{*x * factor}));
+    };
+  },
+  "float factor"));
 ```

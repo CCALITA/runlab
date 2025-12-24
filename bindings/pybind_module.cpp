@@ -8,8 +8,8 @@
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 
-#include "runlab/kernels.hpp"
-#include "runlab/runtime.hpp"
+#include "runlab/kernel/kernels.hpp"
+#include "runlab/engine/engine.hpp"
 
 namespace py = pybind11;
 
